@@ -54,6 +54,7 @@ SHMEM_LIBS      += @EXE_LIBS@ -lelf
 # SHMEM_LDFLAGS    = -L$(SHMEM_LIB_DIR) -Wl,-rpath,$(SHMEM_LIB_DIR)
 SHMEM_LDFLAGS    = -L$(SHMEM_LIB_DIR)
 
+HCLIB_FLAGS        = @HCLIB_LIB@
 #
 # GASNet installation root, and setup
 #
@@ -160,6 +161,7 @@ $(SHMEM_CC):	$(SHMEM_CC).in
 		-e "s%@SHMEM_LDFLAGS@%$(SHMEM_LDFLAGS)%" \
 		-e "s%@SHMEM_LIBS@%$(SHMEM_LIBS)%" \
 		-e "s%@SHMEM_INC_DIR@%$(SHMEM_INC_DIR)%" \
+		-e "s%@HCLIB_FLAGS@%$(HCLIB_FLAGS)%" \
 		-e "s%@GASNET_LDFLAGS@%$(GASNET_LDFLAGS)%" \
 		-e "s%@GASNET_LIBS@%$(GASNET_LIBS)%" \
 		-e "s%@DRIVER@%$(GASNET_LD)%" \

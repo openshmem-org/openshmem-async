@@ -1781,19 +1781,60 @@ extern "C"
      *
      * @subsection c C/C++
      @code
-     void shmem_task_nbi ();
+     void shmem_task_nbi (void (*body)(void *), void *user_data, void **optional_future);
      @endcode
      *
      * @section Effect
      *
      * Launches a single asynchronous task on the same node, executing the function at 
-     * body and passing it the argument user_data. Optional_future offers the programmer 
+     * "body" and passing it the argument "user_data". The "optional_future" offers the programmer 
      * the ability to get back a future object that they can use to later synchronize on 
      * this asynchronous task, or use to make the execution of future tasks predicated 
      * on the completion of this task.
      *
      */
-    void shmem_task_nbi (void);
+    void shmem_task_nbi (void (*body)(void *), void *user_data, void **optional_future);
+
+    /**
+     * @brief number of worker threads being used to run asynchronous tasks
+     *
+     * @section Synopsis
+     *
+     * @subsection c C/C++
+     @code
+     int shmem_n_workers();
+     @endcode
+     *
+     * @section Effect
+     *
+     * Return the number of worker threads being used to run asynchronous tasks.     
+     * A worker thread can be either a computational thread used to execute user-written tasks,
+     * or a resource management thread used by the runtime to schedule 
+     * non-user tasks (e.g. communication thread, GPU management thread, PHI management thread).
+     *
+     *  @return non-zero if hclib supported.
+     *
+     */
+    int shmem_n_workers();
+
+    /**
+     * @brief id for the current worker thread
+     *
+     * @section Synopsis
+     *
+     * @subsection c C/C++
+     @code
+     int shmem_my_worker();
+     @endcode
+     *
+     * @section Effect
+     *
+     * Returns the ID for the current worker thread, unique within this process
+     *
+     *  @return non-zero if hclib supported.
+     *
+     */ 
+    int shmem_my_worker();
 
     /*
      * deprecated shmem constants

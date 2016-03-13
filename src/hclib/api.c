@@ -59,13 +59,25 @@
 
 #ifdef HAVE_FEATURE_HCLIB
 
-void shmem_task_nbi (void)
-{
+#include "hclib.h"
 
+void shmem_task_nbi (void (*body)(void *), void *user_data, void **optional_future)
+{
+  hclib_async(body, user_data, optional_future, NULL, NULL, 0);
+}
+
+int shmem_n_workers() {
+  return hclib_num_workers();
+}
+
+int shmem_my_worker() {
+  return get_current_worker();
 }
 
 #else // !HAVE_FEATURE_HCLIB --> unsupported case
 
-void shmem_task_nbi (void) { }
+void shmem_task_nbi (void (*body)(void *), void *user_data, void **optional_future) { }
+int shmem_n_workers() { return -2; }
+int shmem_my_worker() { return -2; }
 
 #endif

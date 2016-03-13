@@ -68,6 +68,7 @@ incdir=
 bindir=
 modulefilesdir=
 hclib_top_dir=
+hclib_lib=
 
 show_progress=YES
 
@@ -335,6 +336,7 @@ do
             hclib_top_dir="`chompit $o`"
             hclib_headers="-I$hclib_top_dir/include"
 	    feature_hclib=enabled
+            hclib_lib="$hclib_top_dir/lib/libhclib.a -lxml2"
             ;;
         --enable-debug)
             feature_debug=enabled
@@ -1047,6 +1049,7 @@ do
         -e "s%@EXE_HEADERS@%$exe_headers%g" \
         -e "s%@EXE_LIBS@%$exe_libs%g" \
         -e "s%@HCLIB_HEADERS@%$hclib_headers%g" \
+        -e "s%@HCLIB_LIB@%$hclib_lib%g" \
         -e "s%@HAVE_FEATURE_EXPERIMENTAL@%$feature_experimental%g" \
         -e "s%@HAVE_FEATURE_PSHMEM@%$feature_pshmem%g" \
         -e "s%@HAVE_FEATURE_DEBUG@%$feature_debug%g" \
