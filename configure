@@ -61,11 +61,13 @@ feature_experimental=disabled
 feature_debug=disabled
 feature_trace=disabled
 feature_pshmem=disabled
+feature_hclib=disabled
 
 libdir=
 incdir=
 bindir=
 modulefilesdir=
+hclib_top_dir=
 
 show_progress=YES
 
@@ -176,6 +178,9 @@ Usage: $progname [options]
                                      (default: /usr/include)
     --with-libelf-libdir=L       Libelf library files in directory L
                                      (default: /usr/lib64)
+
+    --with-hclib=HC              hclib header and library files under
+                                     directory HC (.../include, .../lib)
 
   Optional features:
 
@@ -325,6 +330,11 @@ do
             exe_libdir="`chompit $o`"
             # TODO: try to defer to per-compiler section
             # exe_libs="-L$exe_lib_dir -Wl,-rpath,$exe_lib_dir"
+            ;;
+        --with-hclib=*)
+            hclib_top_dir="`chompit $o`"
+            hclib_headers="-I$hclib_top_dir/include"
+	    feature_hclib=enabled
             ;;
         --enable-debug)
             feature_debug=enabled
@@ -1036,10 +1046,12 @@ do
         -e "s%@GASNET_THRENV@%$gasnet_threnv%g" \
         -e "s%@EXE_HEADERS@%$exe_headers%g" \
         -e "s%@EXE_LIBS@%$exe_libs%g" \
+        -e "s%@HCLIB_HEADERS@%$hclib_headers%g" \
         -e "s%@HAVE_FEATURE_EXPERIMENTAL@%$feature_experimental%g" \
         -e "s%@HAVE_FEATURE_PSHMEM@%$feature_pshmem%g" \
         -e "s%@HAVE_FEATURE_DEBUG@%$feature_debug%g" \
         -e "s%@HAVE_FEATURE_TRACE@%$feature_trace%g" \
+        -e "s%@HAVE_FEATURE_HCLIB@%$feature_hclib%g" \
         -e "s%@PREFIX@%$prefix%g" \
         -e "s%@BIN_DIR@%$bindir%g" \
         -e "s%@LIB_DIR@%$libdir%g" \
@@ -1104,6 +1116,11 @@ tell "Options:"
 tell "  Debug is                      $feature_debug"
 tell "  Trace is                      $feature_trace"
 tell "  PSHMEM support is             $feature_pshmem"
+tell "  HClib support is              $feature_hclib"
+if [ "$feature_hclib" = "enabled" ]
+then
+   tell "  HClib installation dir is     $hclib_top_dir"
+fi
 tell "  Experimental features are     $feature_experimental"
 tell ""
 tell "Installation:"
