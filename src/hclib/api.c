@@ -40,7 +40,6 @@
  *
  */
 
-#ifdef HAVE_FEATURE_HCLIB
 
 /*
  * These are compatibility routines for older SGI architectures.  They
@@ -58,10 +57,15 @@
 #include "pshmem.h"
 #endif /* HAVE_FEATURE_PSHMEM */
 
+#ifdef HAVE_FEATURE_HCLIB
 
-void
-shmem_task_nbi (void)
+void shmem_task_nbi (void)
 {
+
 }
+
+#else // !HAVE_FEATURE_HCLIB --> unsupported case
+
+void shmem_task_nbi (void) { }
 
 #endif

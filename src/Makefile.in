@@ -222,6 +222,16 @@ WTIME_OBJ             = $(WTIME_SRC:.c=.o)
 
 # ---------------------------------------------------------
 
+# ---------------------------------------------------------
+#
+# hclib routines
+#
+HCLIB_DIR             = ./hclib
+HCLIB_CPPFLAGS        = -I$(HCLIB_DIR)
+HCLIB_SRC             = $(HCLIB_DIR)/*.c
+HCLIB_OBJ             = $(HCLIB_SRC:.c=.o)
+
+
 #
 # this is where the C compiler gets chosen along with the various
 # flags that do PIC, dependency, debug/optimize and C99 compliance
@@ -336,6 +346,7 @@ API_OBJ         += $(REDUCE_OBJ)
 API_OBJ         += $(FORTRAN_OBJ)
 API_OBJ         += $(PROFILING_OBJ)
 API_OBJ         += $(WTIME_OBJ)
+API_OBJ         += $(HCLIB_OBJ)
 
 OBJ              = $(INT_OBJ) $(API_OBJ)
 
@@ -477,6 +488,9 @@ $(PROFILING_OBJ):
 $(WTIME_OBJ):
 	$(MAKE) -C $(WTIME_DIR) build-stamp
 
+$(HCLIB_OBJ):
+	$(MAKE) -C $(HCLIB_DIR) build-stamp
+
 # -- otherwise, compile everything else like this ---------
 
 %.o:	%.c
@@ -493,7 +507,7 @@ $(SHMEM_LIBRARY_SO):	$(OBJ_SO)
 		$(BARRIER_OBJ) $(BARRIER_ALL_OBJ) \
 		$(MEMORY_OBJ) $(ATOMIC_OBJ) $(FENCE_OBJ) $(CACHE_OBJ) \
 		$(PTP_OBJ) $(BROADCAST_OBJ) $(COLLECT_OBJ) $(FCOLLECT_OBJ) \
-		$(FORTRAN_OBJ) $(REDUCE_OBJ) $(PROFILING_OBJ) $(WTIME_OBJ) \
+		$(FORTRAN_OBJ) $(REDUCE_OBJ) $(PROFILING_OBJ) $(WTIME_OBJ) $(HCLIB_OBJ) \
 		$(LIBS)
 
 # -- generate the archive object library -------------------
@@ -528,6 +542,7 @@ tidy clean:
 	$(MAKE) -C $(GLOBALVAR_DIR) $@
 	$(MAKE) -C $(COMMS_DIR) $@
 	$(MAKE) -C $(UTILS_DIR) $@
+	$(MAKE) -C $(HCLIB_DIR) $@
 	$(REMOVE) $(SHMEM_LIBRARY_A)
 
 distclean: clean

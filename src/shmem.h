@@ -1774,6 +1774,27 @@ extern "C"
      */
     int shmem_test_lock (long *lock) _WUR;
 
+    /**
+     * @brief launches a single local asynchronous task
+     *
+     * @section Synopsis
+     *
+     * @subsection c C/C++
+     @code
+     void shmem_task_nbi ();
+     @endcode
+     *
+     * @section Effect
+     *
+     * Launches a single asynchronous task on the same node, executing the function at 
+     * body and passing it the argument user_data. Optional_future offers the programmer 
+     * the ability to get back a future object that they can use to later synchronize on 
+     * this asynchronous task, or use to make the execution of future tasks predicated 
+     * on the completion of this task.
+     *
+     */
+    void shmem_task_nbi (void);
+
     /*
      * deprecated shmem constants
      */
