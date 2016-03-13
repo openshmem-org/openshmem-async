@@ -40,59 +40,9 @@
  *
  */
 
-
-/*
- * These are compatibility routines for older SGI architectures.  They
- * are now defined in OpenSHMEM to do nothing.
- */
-
-#include "utils.h"
-#include "trace.h"
-
-/*
- * Compatibility no-op cache routines
- */
-
-#ifdef HAVE_FEATURE_PSHMEM
-#include "pshmem.h"
-#endif /* HAVE_FEATURE_PSHMEM */
-
-#include "api.h"
-
 #ifdef HAVE_FEATURE_HCLIB
-
-void shmem_task_nbi (void (*body)(void *), void *user_data, void **optional_future)
-{
-  hclib_async(body, user_data, optional_future, NULL, NULL, 0);
-}
-
-int shmem_n_workers() {
-  return hclib_num_workers();
-}
-
-int shmem_my_worker() {
-  return get_current_worker();
-}
-
-void shmem_hclib_init(int *argc, char **argv, void* entrypoint) {
-  hclib_launch(argc, argv, entrypoint, NULL);
-}
-
-void shmem_hclib_start_finish() {
-  hclib_start_finish();
-}
-
-void shmem_hclib_end_finish() {
-  hclib_end_finish();
-}
-
-#else // !HAVE_FEATURE_HCLIB --> unsupported case
-
-void shmem_task_nbi (void (*body)(void *), void *user_data, void **optional_future) { }
-int shmem_n_workers() { return -1; }
-int shmem_my_worker() { return -1; }
-void shmem_hclib_init(int *argc, char **argv, void* entrypoint) { }
-void shmem_hclib_start_finish(){}
-void shmem_hclib_end_finish(){}
-
+#include "hclib.h"
 #endif
+
+void shmem_hclib_start_finish();
+void shmem_hclib_end_finish();

@@ -1775,6 +1775,24 @@ extern "C"
     int shmem_test_lock (long *lock) _WUR;
 
     /**
+     * @brief 
+     *
+     * @section Synopsis temporary routine to launch hclib runtime
+     *
+     * @subsection c C/C++
+     @code
+     void shmem_hclib_init(int *argc, char **argv, func_t ptr);
+     @endcode
+     *
+     * @section Effect
+     *
+     * Launches the hclib runtime. This is a temporary runtime and should
+     * go away over the time.
+     *
+     */
+    void shmem_hclib_init(int *argc, char **argv, void* ptr);
+
+    /**
      * @brief launches a single local asynchronous task
      *
      * @section Synopsis
