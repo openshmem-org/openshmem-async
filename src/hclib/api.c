@@ -74,8 +74,24 @@ int shmem_my_worker() {
   return get_current_worker();
 }
 
+// this would go away once hclib fibre support is fixed for communication worker
+void temporary_wrapper(void* entrypoint) {
+  /*
+   * In HC-OpenSHMEM, there is no start_finish equivalent call. 
+   * The end_finish is called everytime user will call shmem_fence/shmem_barrier etc.
+   * Once the end_finish (implicitely) is called from HC-OpenSHMEM, 
+   * a new start_finish scope is started to pair with
+   * the hclib_end_finish implicitely called at the end of user_main.
+   */
+  hclib_start_finish();
+  asyncFct_t funcPtr = (asyncFct_t) entrypoint;
+  funcPtr(NULL);
+  hclib_end_finish();
+}
+
 void shmem_workers_init(int *argc, char **argv, void* entrypoint, void * arg) {
-  hclib_launch(argc, argv, entrypoint, arg);
+  assert(arg==NULL && "temporarily we are not allowing passing argument to the entrypoint function");
+  hclib_launch(argc, argv, temporary_wrapper, entrypoint);
 }
 
 void shmem_hclib_end_finish() {
