@@ -1814,6 +1814,37 @@ extern "C"
     void shmem_task_nbi (void (*body)(void *), void *user_data, void **optional_future);
 
     /**
+     * @brief launches a local parallel for loop
+     *
+     * @section Synopsis
+     *
+     * @subsection c C/C++
+     @code
+     void shmem_parallel_for_nbi(void (*body)(void *), void *user_data, void **optional_future, 
+                                 int lowBound, int highBound, int stride, int tile_size, 
+                                 int loop_dimension, int loop_mode);
+     @endcode
+     *
+     * @section Effect
+     *
+     * Launches a set of local, asynchronous, parallel tasks, each identified by a unique ID (i.e. iteration). 
+     * This API is labelled as a parallel-for to make it conceptually easy to understand, though realistically 
+     * it has little in common with an actual for loop. The arguments user_data and optional_future 
+     * have the same meaning here as for shmem_task_nbi. Loop properties are specified by lowBound,
+     * highBound, stride and tile_size. To specify the dimension of for loop (currently 1, 2 and 3 
+     * dimensions are supported), loop_dimension is used. There two possible ways to schedule
+     * the parallel for: SHMEM_PARALLEL_FOR_FLAT_MODE and SHMEM_PARALLEL_FOR_RECURSIVE_MODE.
+     * SHMEM_PARALLEL_FOR_FLAT_MODE mode to perform static chunking of the iteration space.
+     * SHMEM_PARALLEL_FOR_RECURSIVE_MODE mode to recursively chunk the iteration space.
+     *
+     */
+    #define SHMEM_PARALLEL_FOR_FLAT_MODE      0
+    #define SHMEM_PARALLEL_FOR_RECURSIVE_MODE 1
+    void shmem_parallel_for_nbi(void (*body)(void *), void *user_data, void **optional_future, 
+                                 int lowBound, int highBound, int stride, int tile_size, 
+                                 int loop_dimension, int loop_mode);
+
+    /**
      * @brief number of worker threads being used to run asynchronous tasks
      *
      * @section Synopsis

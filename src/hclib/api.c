@@ -66,6 +66,14 @@ void shmem_task_nbi (void (*body)(void *), void *user_data, void **optional_futu
   hclib_async(body, user_data, optional_future, NULL, NULL, 0);
 }
 
+void shmem_parallel_for_nbi(void (*body)(void *), void *user_data, void **optional_future, 
+                              int lowBound, int highBound, int stride, int tile_size, 
+                              int loop_dimension, int loop_mode) {
+  
+  loop_domain_t info = { lowBound, highBound, stride, tile_size};
+  hclib_forasync(body, user_data, optional_future, loop_dimension, &info, loop_mode);
+}
+
 int shmem_n_workers() {
   return hclib_num_workers();
 }
@@ -109,7 +117,13 @@ void shmem_hclib_end_finish() {
 #else // !HAVE_FEATURE_HCLIB --> unsupported case
 
 typedef void (*asyncFct_t)(void * arg);
-void shmem_task_nbi (void (*body)(void *), void *user_data, void **optional_future) { }
+void shmem_parallel_for_nbi(void (*body)(void *), void *user_data, void **optional_future, 
+                              int lowBound, int highBound, int stride, int tile_size, 
+                              int loop_dimension, int loop_mode) {
+}
+void shmem_task_nbi (void (*body)(void *), void *user_data, void **optional_future) { 
+  body(user_data);
+}
 int shmem_n_workers() { return -1; }
 int shmem_my_worker() { return -1; }
 void shmem_workers_init(int *argc, char **argv, void* entrypoint, void * arg) { 
