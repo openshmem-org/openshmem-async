@@ -117,6 +117,8 @@ shmemi_barrier_dispatch_init (void)
 void
 shmem_barrier (int PE_start, int logPE_stride, int PE_size, long *pSync)
 {
+    shmem_hclib_end_finish();
+
     INIT_CHECK ();
 
     shmem_quiet ();

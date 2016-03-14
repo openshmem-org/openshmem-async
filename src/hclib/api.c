@@ -78,12 +78,16 @@ void shmem_workers_init(int *argc, char **argv, void* entrypoint, void * arg) {
   hclib_launch(argc, argv, entrypoint, arg);
 }
 
-void shmem_hclib_start_finish() {
-  hclib_start_finish();
-}
-
 void shmem_hclib_end_finish() {
   hclib_end_finish();
+  /*
+   * In HC-OpenSHMEM, there is no start_finish equivalent call. 
+   * The end_finish is called everytime user will call shmem_fence/shmem_barrier etc.
+   * Once the end_finish (implicitely) is called from HC-OpenSHMEM, 
+   * a new start_finish scope is started to pair with
+   * the hclib_end_finish implicitely called at the end of user_main.
+   */
+  hclib_start_finish();
 }
 
 #else // !HAVE_FEATURE_HCLIB --> unsupported case
@@ -96,7 +100,6 @@ void shmem_workers_init(int *argc, char **argv, void* entrypoint, void * arg) {
   asyncFct_t funcPtr = (asyncFct_t) entrypoint;
   funcPtr(arg);
 }
-void shmem_hclib_start_finish(){}
 void shmem_hclib_end_finish(){}
 
 #endif

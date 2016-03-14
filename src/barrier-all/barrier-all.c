@@ -100,6 +100,8 @@ shmemi_barrier_all_dispatch_init (void)
 void
 shmem_barrier_all (void)
 {
+    shmem_hclib_end_finish();
+
     INIT_CHECK ();
 
     shmem_quiet ();

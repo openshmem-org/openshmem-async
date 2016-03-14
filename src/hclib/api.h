@@ -44,5 +44,4 @@
 #include "hclib.h"
 #endif
 
-void shmem_hclib_start_finish();
 void shmem_hclib_end_finish();
