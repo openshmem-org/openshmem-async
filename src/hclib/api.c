@@ -74,8 +74,8 @@ int shmem_my_worker() {
   return get_current_worker();
 }
 
-void shmem_hclib_init(int *argc, char **argv, void* entrypoint) {
-  hclib_launch(argc, argv, entrypoint, NULL);
+void shmem_workers_init(int *argc, char **argv, void* entrypoint, void * arg) {
+  hclib_launch(argc, argv, entrypoint, arg);
 }
 
 void shmem_hclib_start_finish() {
@@ -88,10 +88,14 @@ void shmem_hclib_end_finish() {
 
 #else // !HAVE_FEATURE_HCLIB --> unsupported case
 
+typedef void (*asyncFct_t)(void * arg);
 void shmem_task_nbi (void (*body)(void *), void *user_data, void **optional_future) { }
 int shmem_n_workers() { return -1; }
 int shmem_my_worker() { return -1; }
-void shmem_hclib_init(int *argc, char **argv, void* entrypoint) { }
+void shmem_workers_init(int *argc, char **argv, void* entrypoint, void * arg) { 
+  asyncFct_t funcPtr = (asyncFct_t) entrypoint;
+  funcPtr(arg);
+}
 void shmem_hclib_start_finish(){}
 void shmem_hclib_end_finish(){}
 

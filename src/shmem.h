@@ -1781,7 +1781,7 @@ extern "C"
      *
      * @subsection c C/C++
      @code
-     void shmem_hclib_init(int *argc, char **argv, func_t ptr);
+     void shmem_workers_init(int *argc, char **argv, void* funcPtr, void * arg);
      @endcode
      *
      * @section Effect
@@ -1790,7 +1790,7 @@ extern "C"
      * go away over the time.
      *
      */
-    void shmem_hclib_init(int *argc, char **argv, void* ptr);
+    void shmem_workers_init(int *argc, char **argv, void* funcPtr, void * arg);
 
     /**
      * @brief launches a single local asynchronous task
