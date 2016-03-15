@@ -1963,27 +1963,6 @@ extern "C"
                                  int lowBound, int highBound, int stride, int tile_size, 
                                  int loop_dimension, int loop_mode);
 
-#if 0
-    /**
-     * @brief launch a task whose execution is predicated on a future object
-     *
-     * @subsection c C/C++
-     @code
-     void shmem_task_await_nbi(shmem_future_t **futures, int nfutures, void (*body)(void *), 
-                               void *user_data, void **optional_future);
-     @endcode
-     *
-     * @section Effect
-     *
-     * Identical to shmem_task_nbi but creates a task whose execution is predicated on the
-     * nfutures specified by futures.
-     *
-     *
-     */
-     void shmem_task_await_nbi(shmem_future_t **futures, int nfutures, void (*body)(void *), 
-                               void *user_data, void **optional_future);
-#endif
-
     /*
      * deprecated shmem constants
      */
