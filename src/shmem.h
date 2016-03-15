@@ -1793,58 +1793,6 @@ extern "C"
     void shmem_workers_init(int *argc, char **argv, void* funcPtr, void * arg);
 
     /**
-     * @brief launches a single local asynchronous task
-     *
-     * @section Synopsis
-     *
-     * @subsection c C/C++
-     @code
-     void shmem_task_nbi (void (*body)(void *), void *user_data, void **optional_future);
-     @endcode
-     *
-     * @section Effect
-     *
-     * Launches a single asynchronous task on the same node, executing the function at 
-     * "body" and passing it the argument "user_data". The "optional_future" offers the programmer 
-     * the ability to get back a future object that they can use to later synchronize on 
-     * this asynchronous task, or use to make the execution of future tasks predicated 
-     * on the completion of this task.
-     *
-     */
-    void shmem_task_nbi (void (*body)(void *), void *user_data, void **optional_future);
-
-    /**
-     * @brief launches a local parallel for loop
-     *
-     * @section Synopsis
-     *
-     * @subsection c C/C++
-     @code
-     void shmem_parallel_for_nbi(void (*body)(void *), void *user_data, void **optional_future, 
-                                 int lowBound, int highBound, int stride, int tile_size, 
-                                 int loop_dimension, int loop_mode);
-     @endcode
-     *
-     * @section Effect
-     *
-     * Launches a set of local, asynchronous, parallel tasks, each identified by a unique ID (i.e. iteration). 
-     * This API is labelled as a parallel-for to make it conceptually easy to understand, though realistically 
-     * it has little in common with an actual for loop. The arguments user_data and optional_future 
-     * have the same meaning here as for shmem_task_nbi. Loop properties are specified by lowBound,
-     * highBound, stride and tile_size. To specify the dimension of for loop (currently 1, 2 and 3 
-     * dimensions are supported), loop_dimension is used. There two possible ways to schedule
-     * the parallel for: SHMEM_PARALLEL_FOR_FLAT_MODE and SHMEM_PARALLEL_FOR_RECURSIVE_MODE.
-     * SHMEM_PARALLEL_FOR_FLAT_MODE mode to perform static chunking of the iteration space.
-     * SHMEM_PARALLEL_FOR_RECURSIVE_MODE mode to recursively chunk the iteration space.
-     *
-     */
-    #define SHMEM_PARALLEL_FOR_FLAT_MODE      0
-    #define SHMEM_PARALLEL_FOR_RECURSIVE_MODE 1
-    void shmem_parallel_for_nbi(void (*body)(void *), void *user_data, void **optional_future, 
-                                 int lowBound, int highBound, int stride, int tile_size, 
-                                 int loop_dimension, int loop_mode);
-
-    /**
      * @brief number of worker threads being used to run asynchronous tasks
      *
      * @section Synopsis
@@ -1884,6 +1832,157 @@ extern "C"
      *
      */ 
     int shmem_my_worker();
+
+    /**
+     * @brief create a promise object
+     * @section Synopsis
+     *
+     * @subsection c C/C++
+     @code
+     shmem_promise_t *shmem_malloc_promise();
+     @endcode
+     *
+     * @section Effect
+     *
+     * Returns one promise object which can be used to trigger a asynchronous 
+     * task predicated on this promise object.
+     *
+     *  @return pointer of type shmem_promise_t
+     *
+     */
+    #define SIZE_OF_HCLIB_PROMISE_OBJECT 32    // TODO: a better solution is needed
+    typedef struct shmem_promise_t {
+        char promise[SIZE_OF_HCLIB_PROMISE_OBJECT];
+    } shmem_promise_t;
+    #define SIZE_OF_HCLIB_FUTURE_OBJECT sizeof(void*)
+    typedef struct shmem_future_t {
+        char future[SIZE_OF_HCLIB_FUTURE_OBJECT];
+    } shmem_future_t;
+    shmem_promise_t *shmem_malloc_promise();
+
+    /**
+     * @brief create several promise objects
+     * @section Synopsis
+     *
+     * @subsection c C/C++
+     @code
+     shmem_promise_t **shmem_malloc_promises(int npromises);
+     @endcode
+     *
+     * @section Effect
+     *
+     * Returns "npromises" number of "promise" objects which can be used to trigger a 
+     * chain of asynchronous tasks predicated on these promise objects.
+     *
+     *  @return pointer of type shmem_promise_t
+     *
+     */
+    shmem_promise_t **shmem_malloc_promises(int npromises);
+
+    /**
+     * @brief satisfy a specific promise object
+     *
+     * @subsection c C/C++
+     @code
+     void shmem_satisfy_promise(shmem_promise_t *promise);
+     @endcode
+     *
+     * @section Effect
+     *
+     * Satisfy the specified promise object, triggering the execution of any downstream task
+     * that is registered on this promise's future
+     *
+     */
+    void shmem_satisfy_promise(shmem_promise_t *promise, void* datum);
+
+    /**
+     * @brief block the current thread on the execution of the provided future
+     *
+     * @subsection c C/C++
+     @code
+     void shmem_future_wait(shmem_future_t *future);
+     @endcode
+     *
+     * @section Effect
+     *
+     * Current thread will wait until the provided future is executed
+     *
+     *  @return datum that was put on the promise
+     */
+    void* shmem_future_wait(shmem_future_t *future);
+
+    /**
+     * @brief launches a single local asynchronous task
+     *
+     * @section Synopsis
+     *
+     * @subsection c C/C++
+     @code
+     void shmem_task_nbi (void (*body)(void *), void *user_data, shmem_future_t **optional_future);
+     @endcode
+     *
+     * @section Effect
+     *
+     * Launches a single asynchronous task on the same node, executing the function at 
+     * "body" and passing it the argument "user_data". The "optional_future" offers the programmer 
+     * the ability to get back a future object that they can use to later synchronize on 
+     * this asynchronous task, or use to make the execution of future tasks predicated 
+     * on the completion of this task.
+     *
+     */
+    void shmem_task_nbi (void (*body)(void *), void *user_data, shmem_future_t **optional_future);
+
+    /**
+     * @brief launches a local parallel for loop
+     *
+     * @section Synopsis
+     *
+     * @subsection c C/C++
+     @code
+     void shmem_parallel_for_nbi(void (*body)(void *), void *user_data, shmem_future_t**optional_future, 
+                                 int lowBound, int highBound, int stride, int tile_size, 
+                                 int loop_dimension, int loop_mode);
+     @endcode
+     *
+     * @section Effect
+     *
+     * Launches a set of local, asynchronous, parallel tasks, each identified by a unique ID (i.e. iteration). 
+     * This API is labelled as a parallel-for to make it conceptually easy to understand, though realistically 
+     * it has little in common with an actual for loop. The arguments user_data and optional_future 
+     * have the same meaning here as for shmem_task_nbi. Loop properties are specified by lowBound,
+     * highBound, stride and tile_size. To specify the dimension of for loop (currently 1, 2 and 3 
+     * dimensions are supported), loop_dimension is used. There two possible ways to schedule
+     * the parallel for: SHMEM_PARALLEL_FOR_FLAT_MODE and SHMEM_PARALLEL_FOR_RECURSIVE_MODE.
+     * SHMEM_PARALLEL_FOR_FLAT_MODE mode to perform static chunking of the iteration space.
+     * SHMEM_PARALLEL_FOR_RECURSIVE_MODE mode to recursively chunk the iteration space.
+     *
+     */
+    #define SHMEM_PARALLEL_FOR_FLAT_MODE      0
+    #define SHMEM_PARALLEL_FOR_RECURSIVE_MODE 1
+    void shmem_parallel_for_nbi(void (*body)(void *), void *user_data, shmem_future_t **optional_future, 
+                                 int lowBound, int highBound, int stride, int tile_size, 
+                                 int loop_dimension, int loop_mode);
+
+#if 0
+    /**
+     * @brief launch a task whose execution is predicated on a future object
+     *
+     * @subsection c C/C++
+     @code
+     void shmem_task_await_nbi(shmem_future_t **futures, int nfutures, void (*body)(void *), 
+                               void *user_data, void **optional_future);
+     @endcode
+     *
+     * @section Effect
+     *
+     * Identical to shmem_task_nbi but creates a task whose execution is predicated on the
+     * nfutures specified by futures.
+     *
+     *
+     */
+     void shmem_task_await_nbi(shmem_future_t **futures, int nfutures, void (*body)(void *), 
+                               void *user_data, void **optional_future);
+#endif
 
     /*
      * deprecated shmem constants
