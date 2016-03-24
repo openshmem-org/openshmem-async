@@ -1777,20 +1777,36 @@ extern "C"
     /**
      * @brief 
      *
-     * @section Synopsis temporary routine to launch hclib runtime
+     * @section routine to launch hclib runtime
      *
      * @subsection c C/C++
      @code
-     void shmem_workers_init(int *argc, char **argv, void* funcPtr, void * arg);
+     void shmem_workers_init();
      @endcode
      *
      * @section Effect
      *
-     * Launches the hclib runtime. This is a temporary runtime and should
-     * go away over the time.
+     * Launches the hclib runtime.
      *
      */
-    void shmem_workers_init(int *argc, char **argv, void* funcPtr, void * arg);
+    void shmem_workers_init();
+
+    /**
+     * @brief 
+     *
+     * @section routine to terminate hclib runtime
+     *
+     * @subsection c C/C++
+     @code
+     void shmem_workers_finalize();
+     @endcode
+     *
+     * @section Effect
+     *
+     * Terminate the hclib runtime.
+     *
+     */
+    void shmem_workers_finalize();
 
     /**
      * @brief number of worker threads being used to run asynchronous tasks
