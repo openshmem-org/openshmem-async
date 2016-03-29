@@ -1774,6 +1774,25 @@ extern "C"
      */
     int shmem_test_lock (long *lock) _WUR;
 
+#ifndef  HCLIB_COMM_WORKER_FIXED
+    /**
+     * @brief 
+     *
+     * @section Synopsis temporary routine to launch hclib runtime
+     *
+     * @subsection c C/C++
+     @code
+     void shmem_workers_init(void* funcPtr, void * arg);
+     @endcode
+     *
+     * @section Effect
+     *
+     * Launches the hclib runtime. This is a temporary runtime and should
+     * go away over the time.
+     *
+     */
+    void shmem_workers_init(void* funcPtr, void * arg);
+#else
     /**
      * @brief 
      *
@@ -1807,6 +1826,7 @@ extern "C"
      *
      */
     void shmem_workers_finalize();
+#endif
 
     /**
      * @brief number of worker threads being used to run asynchronous tasks
@@ -1848,6 +1868,10 @@ extern "C"
      *
      */ 
     int shmem_my_worker();
+
+    void shmem_start_finish();
+
+    void shmem_end_finish();
 
     /**
      * @brief create a promise object

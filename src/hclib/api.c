@@ -68,6 +68,14 @@
 
 #ifdef HAVE_FEATURE_HCLIB
 
+void shmem_start_finish() {
+  hclib_start_finish(); 
+}
+
+void shmem_end_finish() {
+  hclib_end_finish();
+}
+
 void shmem_task_nbi (void (*body)(void *), void *user_data, shmem_future_t **optional_future)
 {
   hclib_async(body, user_data, optional_future, NULL, NULL, 0);
@@ -89,6 +97,27 @@ int shmem_my_worker() {
   return get_current_worker();
 }
 
+#ifndef HCLIB_COMM_WORKER_FIXED
+// this would go away once hclib fibre support is fixed for communication worker
+void temporary_wrapper(void* entrypoint) {
+  /*
+   * In HC-OpenSHMEM, there is no start_finish equivalent call.
+   * The end_finish is called everytime user will call shmem_fence/shmem_barrier etc.
+   * Once the end_finish (implicitely) is called from HC-OpenSHMEM,
+   * a new start_finish scope is started to pair with
+   * the hclib_end_finish implicitely called at the end of user_main.
+   */
+  hclib_start_finish();
+  asyncFct_t funcPtr = (asyncFct_t) entrypoint;
+  funcPtr(NULL);
+  hclib_end_finish();
+}
+
+void shmem_workers_init(void* entrypoint, void * arg) {
+  assert(arg==NULL && "temporarily we are not allowing passing argument to the entrypoint function");
+  hclib_launch(temporary_wrapper, entrypoint);
+}
+#else 
 void shmem_workers_init() {
   hclib_init();
   /*
@@ -105,6 +134,7 @@ void shmem_workers_finalize() {
   hclib_end_finish();
   hclib_finalize();
 }
+#endif
 
 void shmem_hclib_end_finish() {
   hclib_end_finish();
