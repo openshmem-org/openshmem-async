@@ -68,11 +68,11 @@
 
 #ifdef HAVE_FEATURE_HCLIB
 
-void shmem_start_finish() {
+void shmem_task_scope_begin() {
   hclib_start_finish(); 
 }
 
-void shmem_end_finish() {
+void shmem_task_scope_end() {
   hclib_end_finish();
 }
 

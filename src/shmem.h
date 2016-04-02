@@ -1869,9 +1869,39 @@ extern "C"
      */ 
     int shmem_my_worker();
 
-    void shmem_start_finish();
+    /**
+     * @brief start a task synchronization scope
+     *
+     * @section Synopsis
+     *
+     * @subsection c C/C++
+     @code
+     int shmem_task_scope_begin();
+     @endcode
+     *
+     * @section Effect
+     *
+     * Start a new synchronization scope for asynchronously launched tasks. 
+     *
+     */ 
+    void shmem_task_scope_begin();
 
-    void shmem_end_finish();
+    /**
+     * @brief end a task synchronization scope
+     *
+     * @section Synopsis
+     *
+     * @subsection c C/C++
+     @code
+     int shmem_task_scope_end();
+     @endcode
+     *
+     * @section Effect
+     *
+     * End the current synchronization scope for asynchronously launched tasks. 
+     *
+     */ 
+    void shmem_task_scope_end();
 
     /**
      * @brief create a promise object
