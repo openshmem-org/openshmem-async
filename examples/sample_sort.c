@@ -58,16 +58,17 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/time.h>
 
 #include <shmem.h>
 
-#define TOTAL_ELEMENT_PER_PE (1024*1024)
+#define TOTAL_ELEMENT_PER_PE (4*1024*1024)
 #define TYPE uint64_t
 long pSync[_SHMEM_BCAST_SYNC_SIZE];
 #define RESET_BCAST_PSYNC       { int _i; for(_i=0; _i<_SHMEM_BCAST_SYNC_SIZE; _i++) { pSync[_i] = _SHMEM_SYNC_VALUE; } shmem_barrier_all(); }
-#define ASYNC_SHMEM
+//#define ASYNC_SHMEM
 #define VERIFY
-#define HC_GRANULARITY  0
+#define HC_GRANULARITY  4096
 
 static int compare(const void *i, const void *j)
 {
@@ -78,7 +79,6 @@ static int compare(const void *i, const void *j)
   return (0);
 }
 
-#ifdef ASYNC_SHMEM
 int partition(TYPE* data, int left, int right) {
   int i = left;
   int j = right;
@@ -98,6 +98,7 @@ int partition(TYPE* data, int left, int right) {
   return i;
 }
 
+#ifdef ASYNC_SHMEM
 typedef struct sort_data_t {
   TYPE *buffer;
   int left;
@@ -143,12 +144,46 @@ void sorting(TYPE* buffer, int size) {
   buf->right = size - 1; 
   shmem_task_nbi(par_sort, buf, NULL);
 }
-#elif OMP_SHMEM
-#else
+#else  // OpenSHMEM + OpenMP
+void par_sort(TYPE* data, int left, int right) {
+
+  if (right - left + 1 > HC_GRANULARITY) {
+    int index = partition(data, left, right);
+    #pragma omp parallel
+    {
+      #pragma omp single nowait
+      {
+        if (left < index - 1) {
+          #pragma omp task 
+          {
+            par_sort(data, left, index - 1);
+          }
+        }
+        if (index < right) {
+          #pragma omp task 
+          {
+            par_sort(data, index, right);
+          }
+        }
+      }
+    }
+  }
+  else {
+    //  quicksort in C library
+    qsort(data+left, right - left + 1, sizeof(TYPE), compare);
+  }
+}
+
 void sorting(TYPE* buffer, int size) {
-  qsort(buffer, size, sizeof(TYPE), compare);
+  par_sort(buffer, 0, size-1);
 }
 #endif
+
+long mysecond() {
+   struct timeval t;
+   gettimeofday(&t,NULL);
+   return t.tv_sec*1000000+t.tv_usec;
+}
 
 #ifndef HCLIB_COMM_WORKER_FIXED
 void entrypoint(void *arg) {
@@ -167,6 +202,8 @@ int main (int argc, char *argv[]) {
   TYPE 	     *Splitter, *AllSplitter;
   TYPE 	     *Buckets, *BucketBuffer, *LocalBucket;
   TYPE 	     *OutputBuffer, *Output;
+
+  long start_time = mysecond();
   
   MyRank = shmem_my_pe ();
   Numprocs = shmem_n_pes ();
@@ -206,6 +243,9 @@ int main (int argc, char *argv[]) {
     }
   }
   shmem_barrier_all();
+
+  double time0 = (((double)(mysecond()-start_time))/1000000) * 1000; // msec
+  start_time = mysecond();
 
   /**** Sorting Locally ****/
   sorting(InputData, NoofElements_Bloc);
@@ -321,6 +361,7 @@ int main (int argc, char *argv[]) {
   shmem_put64(target_index, LocalBucket, 2*NoofElements_Bloc, Root);
   shmem_barrier_all();
 
+  double time1 = (((double)(mysecond()-start_time))/1000000) * 1000; // msec
   /**** Rearranging output buffer ****/
   if (MyRank == Root){
     Output = (TYPE *) malloc (sizeof (TYPE) * NoofElements);
@@ -339,6 +380,9 @@ int main (int argc, char *argv[]) {
        }
        if(fail) printf("Sorting FAILED\n");  
        else  printf("Sorting PASSED\n");
+       printf("Time for data initialization = %.3f\n",time0);
+       printf("Time for sorting = %.3f\n",time1);
+       printf("Total Time = %.3f\n",(time1+time0));
   	free(Output);
   }/* MyRank==0*/
 
@@ -354,7 +398,11 @@ int main (int argc, char *argv[]) {
 
 int main (int argc, char ** argv) {
     shmem_init ();
+#ifdef ASYNC_SHMEM
     shmem_workers_init(entrypoint, NULL);
+#else
+    entrypoint(NULL);
+#endif
     shmem_finalize ();
 
     return 0;
