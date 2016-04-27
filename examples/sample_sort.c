@@ -61,7 +61,7 @@
 
 #include <shmem.h>
 
-#define SIZE 100000
+#define TOTAL_ELEMENT_PER_PE (1024*1024)
 #define TYPE uint64_t
 long pSync[_SHMEM_BCAST_SYNC_SIZE];
 #define RESET_BCAST_PSYNC       { int _i; for(_i=0; _i<_SHMEM_BCAST_SYNC_SIZE; _i++) { pSync[_i] = _SHMEM_SYNC_VALUE; } shmem_barrier_all(); }
@@ -143,6 +143,7 @@ void sorting(TYPE* buffer, int size) {
   buf->right = size - 1; 
   shmem_task_nbi(par_sort, buf, NULL);
 }
+#elif OMP_SHMEM
 #else
 void sorting(TYPE* buffer, int size) {
   qsort(buffer, size, sizeof(TYPE), compare);
@@ -169,14 +170,8 @@ int main (int argc, char *argv[]) {
   
   MyRank = shmem_my_pe ();
   Numprocs = shmem_n_pes ();
-  NoofElements = SIZE;
+  NoofElements = TOTAL_ELEMENT_PER_PE * Numprocs;
 
-  if(( NoofElements % Numprocs) != 0){
-    if(MyRank == Root)
-      printf("Number of Elements are not divisible by Numprocs \n");
-    shmem_finalize ();
-    exit(0);
-  }
   /**** Reading Input ****/
   
   Input = (TYPE *) shmem_malloc (NoofElements*sizeof(*Input));
@@ -186,7 +181,7 @@ int main (int argc, char *argv[]) {
 
   if (MyRank == Root){
     /* Initialise random number generator  */ 
-    printf ("Generating input Array for Sorting %d uint64_t numbers\n",SIZE);
+    printf ("Generating input Array for Sorting %d uint64_t numbers\n",NoofElements);
     srand48((TYPE)NoofElements);
     for(i=0; i< NoofElements; i++) {
       Input[i] = rand();
