@@ -60,14 +60,23 @@
 #include <string.h>
 #include <sys/time.h>
 
-#include <shmem.h>
-
 #define TOTAL_ELEMENT_PER_PE (4*1024*1024)
 #define TYPE uint64_t
-long pSync[_SHMEM_BCAST_SYNC_SIZE];
-#define RESET_BCAST_PSYNC       { int _i; for(_i=0; _i<_SHMEM_BCAST_SYNC_SIZE; _i++) { pSync[_i] = _SHMEM_SYNC_VALUE; } shmem_barrier_all(); }
 #define VERIFY
 #define HC_GRANULARITY  3072
+
+#ifdef _OSHMEM_
+#include <shmem.h>
+long pSync[_SHMEM_BCAST_SYNC_SIZE];
+#define RESET_BCAST_PSYNC       { int _i; for(_i=0; _i<_SHMEM_BCAST_SYNC_SIZE; _i++) { pSync[_i] = _SHMEM_SYNC_VALUE; } shmem_barrier_all(); }
+#endif
+
+#ifdef _MPI_
+#include <mpi.h>
+#define TYPE_MPI MPI_UINT64_T
+#define shmem_malloc malloc
+#define shmem_free free
+#endif
 
 static int compare(const void *i, const void *j)
 {
@@ -97,7 +106,7 @@ int partition(TYPE* data, int left, int right) {
   return i;
 }
 
-#ifdef ASYNC_SHMEM
+#ifdef _ASYNC_OSHMEM_
 typedef struct sort_data_t {
   TYPE *buffer;
   int left;
@@ -190,7 +199,19 @@ void entrypoint(void *arg) {
 #else
 int main (int argc, char *argv[]) {
   /**** Initialising ****/
+#if defined(_OSHMEM_) && defined(_MPI_)
+  printf("ERROR: You cannot use both OpenSHMEM as well as MPI\n");
+  exit(1); 
+#endif
+
+#if defined(_OSHMEM_)
   shmem_init (); 
+#elif defined(_MPI_)
+  MPI_Init(&argc, &argv);
+#else
+  printf("ERROR: Use either OpenSHMEM or MPI\n");
+  exit(1);
+#endif
 #endif
   /* Variable Declarations */
 
@@ -205,8 +226,13 @@ int main (int argc, char *argv[]) {
 
   long start_time = seconds();
   
-  MyRank = shmem_my_pe ();
+#if defined(_MPI_)
+  MPI_Comm_size(MPI_COMM_WORLD, &Numprocs);
+  MPI_Comm_rank(MPI_COMM_WORLD, &MyRank);
+#else
   Numprocs = shmem_n_pes ();
+  MyRank = shmem_my_pe ();
+#endif
   NoofElements = TOTAL_ELEMENT_PER_PE * Numprocs;
 
   /**** Reading Input ****/
@@ -234,9 +260,11 @@ int main (int argc, char *argv[]) {
   if(InputData == NULL) {
     printf("Error : Can not allocate memory \n");
   }
-  //MPI_Scatter(Input, NoofElements_Bloc, TYPE_MPI, InputData, 
-  //				  NoofElements_Bloc, TYPE_MPI, Root, MPI_COMM_WORLD);
 
+#if defined(_MPI_)
+  MPI_Scatter(Input, NoofElements_Bloc, TYPE_MPI, InputData, 
+				  NoofElements_Bloc, TYPE_MPI, Root, MPI_COMM_WORLD);
+#else 
   shmem_barrier_all();
   if(MyRank == Root) {
     for(i=0; i<Numprocs; i++) {
@@ -245,6 +273,7 @@ int main (int argc, char *argv[]) {
     }
   }
   shmem_barrier_all();
+#endif
 
   double time0 = (((double)(seconds()-start_time))/1000000) * 1000; // msec
   start_time = seconds();
@@ -266,12 +295,16 @@ int main (int argc, char *argv[]) {
   if(AllSplitter == NULL) {
     printf("Error : Can not allocate memory \n");
   }
-  //MPI_Gather (Splitter, Numprocs-1, TYPE_MPI, AllSplitter, Numprocs-1, 
-  //				  TYPE_MPI, Root, MPI_COMM_WORLD);
+
+#if defined(_MPI_)
+  MPI_Gather (Splitter, Numprocs-1, TYPE_MPI, AllSplitter, Numprocs-1, 
+  				  TYPE_MPI, Root, MPI_COMM_WORLD);
+#else
   shmem_barrier_all();
   TYPE* target_index = &AllSplitter[MyRank * (Numprocs-1)];
   shmem_put64(target_index, Splitter, Numprocs-1, Root);
   shmem_barrier_all();
+#endif
 
   /**** Choosing Global Splitters ****/
   if (MyRank == Root){
@@ -282,10 +315,13 @@ int main (int argc, char *argv[]) {
   }
   
   /**** Broadcasting Global Splitters ****/
-  //MPI_Bcast (Splitter, Numprocs-1, TYPE_MPI, 0, MPI_COMM_WORLD);
+#if defined(_MPI_)
+  MPI_Bcast (Splitter, Numprocs-1, TYPE_MPI, 0, MPI_COMM_WORLD);
+#else
   RESET_BCAST_PSYNC;
   shmem_broadcast64(Splitter, Splitter, Numprocs-1, 0, 0, 0, Numprocs, pSync);
   shmem_barrier_all();
+#endif
 
   /**** Creating Numprocs Buckets locally ****/
   Buckets = (TYPE *) shmem_malloc (sizeof (TYPE) * (NoofElements + Numprocs));  
@@ -321,13 +357,16 @@ int main (int argc, char *argv[]) {
     printf("Error : Can not allocate memory \n");
   }
 
-  //MPI_Alltoall (Buckets, NoofElements_Bloc + 1, TYPE_MPI, BucketBuffer, 
-  //					 NoofElements_Bloc + 1, TYPE_MPI, MPI_COMM_WORLD);
+#if defined(_MPI_)
+  MPI_Alltoall (Buckets, NoofElements_Bloc + 1, TYPE_MPI, BucketBuffer, 
+  					 NoofElements_Bloc + 1, TYPE_MPI, MPI_COMM_WORLD);
+#else
   shmem_barrier_all();
   for(i=0; i<Numprocs; i++) {
     shmem_put64(&BucketBuffer[MyRank*(NoofElements_Bloc + 1)], &Buckets[i*(NoofElements_Bloc + 1)],  NoofElements_Bloc + 1, i);   
   }
   shmem_barrier_all();
+#endif
 
   /**** Rearranging BucketBuffer ****/
   LocalBucket = (TYPE *) shmem_malloc (sizeof (TYPE) * 2 * NoofElements / Numprocs);
@@ -356,12 +395,15 @@ int main (int argc, char *argv[]) {
     printf("Error : Can not allocate memory \n");
   }
 
-  //MPI_Gather (LocalBucket, 2*NoofElements_Bloc, TYPE_MPI, OutputBuffer, 
-  //				  2*NoofElements_Bloc, TYPE_MPI, Root, MPI_COMM_WORLD);
+#if defined(_MPI_)
+  MPI_Gather (LocalBucket, 2*NoofElements_Bloc, TYPE_MPI, OutputBuffer, 
+  				  2*NoofElements_Bloc, TYPE_MPI, Root, MPI_COMM_WORLD);
+#else
   shmem_barrier_all();
   target_index = &OutputBuffer[MyRank * (2*NoofElements_Bloc)];
   shmem_put64(target_index, LocalBucket, 2*NoofElements_Bloc, Root);
   shmem_barrier_all();
+#endif
 
   double time1 = (((double)(seconds()-start_time))/1000000) * 1000; // msec
   /**** Rearranging output buffer ****/
@@ -401,18 +443,34 @@ int main (int argc, char *argv[]) {
 }
 
 int main (int argc, char ** argv) {
-    shmem_init ();
-#ifdef ASYNC_SHMEM
-    shmem_workers_init(entrypoint, NULL);
-#else
-    entrypoint(NULL);
+#if defined(_OSHMEM_) && defined(_MPI_)
+  printf("ERROR: You cannot use both OpenSHMEM as well as MPI\n");
+  exit(1); 
 #endif
-    shmem_finalize ();
-
-    return 0;
-}
+#if defined(_OSHMEM_)
+  shmem_init ();
+#ifdef _ASYNC_OSHMEM_
+  shmem_workers_init(entrypoint, NULL);
 #else
+  entrypoint(NULL);
+#endif //_ASYNC_OSHMEM_
+  shmem_finalize ();
+#elif defined(_MPI_)
+  MPI_Init(&argc, &argv);
+  entrypoint(NULL);
+  MPI_Finalize();
+#else 
+  printf("ERROR: Use either OpenSHMEM or MPI\n");
+  exit(1);
+#endif
+  return 0;
+}
+#else // HCLIB_COMM_WORKER_FIXED
    /**** Finalize ****/
+#if defined(_OSHMEM_)
   shmem_finalize();
+#elif defined(_MPI_)
+  MPI_Finalize();
+#endif
 }
 #endif

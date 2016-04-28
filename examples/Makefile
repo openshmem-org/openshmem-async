@@ -40,22 +40,29 @@
 
 
 SHMEM_CC       = oshcc
-SHMEM_CFLAGS   = -g -O2
+MPI_CC         = cc
+CFLAGS   = -O3
 
-C_TESTS        = $(wildcard *.c)
-
-C_EXES         = $(C_TESTS:.c=.x)
-
-EXES           = $(C_EXES)
+EXES           = sample_sort_shmem-async.x sample_sort_shmem-omp.x sample_sort_mpi-omp.x shmem_async_nbi_1.x shmem_parallel_for_nbi_1.x
 
 .PHONY: clean all default
 
 all default:	$(EXES)
 
-.SUFFIXES: .x
+shmem_async_nbi_1.x:
+	$(SHMEM_CC) $(CFLAGS) -o $@ shmem_async_nbi_1.c
 
-%.x:	%.c
-	$(SHMEM_CC) $(SHMEM_CFLAGS) -o $@ $^
+shmem_parallel_for_nbi_1.x:
+	$(SHMEM_CC) $(CFLAGS) -o $@ shmem_parallel_for_nbi_1.c
+
+sample_sort_shmem-async.x:
+	$(SHMEM_CC) $(CFLAGS) -D_OSHMEM_ -D_ASYNC_OSHMEM_ -o $@ sample_sort.c
+
+sample_sort_shmem-omp.x:
+	$(SHMEM_CC) $(CFLAGS) -D_OSHMEM_ -o $@ sample_sort.c -fopenmp
+
+sample_sort_mpi-omp.x:
+	$(MPI_CC) $(CFLAGS) -D_MPI_ -o $@ sample_sort.c -fopenmp
 
 clean:
 	rm -f $(EXES)
