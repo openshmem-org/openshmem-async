@@ -66,9 +66,8 @@
 #define TYPE uint64_t
 long pSync[_SHMEM_BCAST_SYNC_SIZE];
 #define RESET_BCAST_PSYNC       { int _i; for(_i=0; _i<_SHMEM_BCAST_SYNC_SIZE; _i++) { pSync[_i] = _SHMEM_SYNC_VALUE; } shmem_barrier_all(); }
-//#define ASYNC_SHMEM
 #define VERIFY
-#define HC_GRANULARITY  4096
+#define HC_GRANULARITY  3072
 
 static int compare(const void *i, const void *j)
 {
@@ -144,29 +143,24 @@ void sorting(TYPE* buffer, int size) {
   buf->right = size - 1; 
   shmem_task_nbi(par_sort, buf, NULL);
 }
-#else  // OpenSHMEM + OpenMP
+#else  // OpenMP
 void par_sort(TYPE* data, int left, int right) {
 
   if (right - left + 1 > HC_GRANULARITY) {
     int index = partition(data, left, right);
-    #pragma omp parallel
-    {
-      #pragma omp single nowait
+    if (left < index - 1) {
+      #pragma omp task 
       {
-        if (left < index - 1) {
-          #pragma omp task 
-          {
-            par_sort(data, left, index - 1);
-          }
-        }
-        if (index < right) {
-          #pragma omp task 
-          {
-            par_sort(data, index, right);
-          }
-        }
+        par_sort(data, left, index - 1);
       }
     }
+    if (index < right) {
+      #pragma omp task 
+      {
+        par_sort(data, index, right);
+      }
+    }
+    #pragma omp taskwait
   }
   else {
     //  quicksort in C library
@@ -175,11 +169,17 @@ void par_sort(TYPE* data, int left, int right) {
 }
 
 void sorting(TYPE* buffer, int size) {
-  par_sort(buffer, 0, size-1);
+  #pragma omp parallel
+  {
+    #pragma omp single nowait
+    {
+      par_sort(buffer, 0, size-1);
+    }
+  }
 }
 #endif
 
-long mysecond() {
+long seconds() {
    struct timeval t;
    gettimeofday(&t,NULL);
    return t.tv_sec*1000000+t.tv_usec;
@@ -203,7 +203,7 @@ int main (int argc, char *argv[]) {
   TYPE 	     *Buckets, *BucketBuffer, *LocalBucket;
   TYPE 	     *OutputBuffer, *Output;
 
-  long start_time = mysecond();
+  long start_time = seconds();
   
   MyRank = shmem_my_pe ();
   Numprocs = shmem_n_pes ();
@@ -217,6 +217,8 @@ int main (int argc, char *argv[]) {
   }
 
   if (MyRank == Root){
+    printf("\n-----\nmkdir timedrun fake\n\n");
+
     /* Initialise random number generator  */ 
     printf ("Generating input Array for Sorting %d uint64_t numbers\n",NoofElements);
     srand48((TYPE)NoofElements);
@@ -244,8 +246,8 @@ int main (int argc, char *argv[]) {
   }
   shmem_barrier_all();
 
-  double time0 = (((double)(mysecond()-start_time))/1000000) * 1000; // msec
-  start_time = mysecond();
+  double time0 = (((double)(seconds()-start_time))/1000000) * 1000; // msec
+  start_time = seconds();
 
   /**** Sorting Locally ****/
   sorting(InputData, NoofElements_Bloc);
@@ -361,7 +363,7 @@ int main (int argc, char *argv[]) {
   shmem_put64(target_index, LocalBucket, 2*NoofElements_Bloc, Root);
   shmem_barrier_all();
 
-  double time1 = (((double)(mysecond()-start_time))/1000000) * 1000; // msec
+  double time1 = (((double)(seconds()-start_time))/1000000) * 1000; // msec
   /**** Rearranging output buffer ****/
   if (MyRank == Root){
     Output = (TYPE *) malloc (sizeof (TYPE) * NoofElements);
@@ -383,7 +385,9 @@ int main (int argc, char *argv[]) {
        printf("Time for data initialization = %.3f\n",time0);
        printf("Time for sorting = %.3f\n",time1);
        printf("Total Time = %.3f\n",(time1+time0));
-  	free(Output);
+       free(Output);
+       printf("============================ Tabulate Statistics ============================\ntime\n%.3f\n",(time1+time0));
+       printf("=============================================================================\n===== TEST PASSED in 0.0 msec =====\n");
   }/* MyRank==0*/
 
   shmem_free(Input);
