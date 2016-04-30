@@ -59,10 +59,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
+#include <limits.h>
+#include <assert.h>
 
 //#define TOTAL_ELEMENT_PER_PE (4*1024*1024)
-#define TOTAL_ELEMENT_PER_PE (4*1024*1024)
-#define TYPE uint64_t
+#define TOTAL_ELEMENT_PER_PE (8*1024*1024)
+#define ELEMENT_T int
+#define COUNT_T uint64_t
 #define VERIFY
 #define HC_GRANULARITY  2048
 //#define HC_GRANULARITY  3072
@@ -75,7 +78,7 @@ long pSync[_SHMEM_BCAST_SYNC_SIZE];
 
 #ifdef _MPI_
 #include <mpi.h>
-#define TYPE_MPI MPI_UINT64_T
+#define ELEMENT_T_MPI MPI_INT
 #define shmem_malloc malloc
 #define shmem_free free
 #endif
@@ -88,18 +91,18 @@ long seconds() {
 
 static int compare(const void *i, const void *j)
 {
-  if ((*(TYPE*)i) > (*(TYPE *)j))
+  if ((*(ELEMENT_T*)i) > (*(ELEMENT_T *)j))
     return (1);
-  if ((*(TYPE *)i) < (*(TYPE *)j))
+  if ((*(ELEMENT_T *)i) < (*(ELEMENT_T *)j))
     return (-1);
   return (0);
 }
 
-int partition(TYPE* data, int left, int right) {
+int partition(ELEMENT_T* data, int left, int right) {
   int i = left;
   int j = right;
-  TYPE tmp;
-  TYPE pivot = data[(left + right) / 2];
+  ELEMENT_T tmp;
+  ELEMENT_T pivot = data[(left + right) / 2];
   while (i <= j) {
     while (data[i] < pivot) i++;
     while (data[j] > pivot) j--;
@@ -116,14 +119,14 @@ int partition(TYPE* data, int left, int right) {
 
 #ifdef _ASYNC_OSHMEM_
 typedef struct sort_data_t {
-  TYPE *buffer;
+  ELEMENT_T *buffer;
   int left;
   int right;
 } sort_data_t;
 
 void par_sort(void* arg) {
   sort_data_t *in = (sort_data_t*) arg;
-  TYPE* data = in->buffer;
+  ELEMENT_T* data = in->buffer;
   int left = in->left; 
   int right = in->right;
 
@@ -148,12 +151,12 @@ void par_sort(void* arg) {
   }
   else {
     //  quicksort in C library
-    qsort(data+left, right - left + 1, sizeof(TYPE), compare);
+    qsort(data+left, right - left + 1, sizeof(ELEMENT_T), compare);
   }
   free(arg);
 }
 
-void sorting(TYPE* buffer, int size) {
+void sorting(ELEMENT_T* buffer, int size) {
   sort_data_t* buf = (sort_data_t*) malloc(sizeof(sort_data_t)); 
   buf->buffer = buffer;
   buf->left = 0;
@@ -166,7 +169,7 @@ void sorting(TYPE* buffer, int size) {
   printf("Sorting (%d) = %.3f\n",size, end);
 }
 #else  // OpenMP
-void par_sort(TYPE* data, int left, int right) {
+void par_sort(ELEMENT_T* data, int left, int right) {
 
   if (right - left + 1 > HC_GRANULARITY) {
     int index = partition(data, left, right);
@@ -186,11 +189,11 @@ void par_sort(TYPE* data, int left, int right) {
   }
   else {
     //  quicksort in C library
-    qsort(data+left, right - left + 1, sizeof(TYPE), compare);
+    qsort(data+left, right - left + 1, sizeof(ELEMENT_T), compare);
   }
 }
 
-void sorting(TYPE* buffer, int size) {
+void sorting(ELEMENT_T* buffer, int size) {
   long start = seconds(); 
   #pragma omp parallel
   {
@@ -204,39 +207,41 @@ void sorting(TYPE* buffer, int size) {
 }
 #endif
 
-void shmem_scatter64(TYPE* dest, TYPE* src, int root, int count) {
+#ifdef _OSHMEM_
+void shmem_scatter32(ELEMENT_T* dest, ELEMENT_T* src, int root, int count) {
   int i;
   int me = shmem_my_pe();
   int procs = shmem_n_pes();
   shmem_barrier_all();
   if(me == root) {
     for(i=0; i<procs; i++) {
-      TYPE* start = &src[i * count];
-      shmem_put64(dest, start, count, i);
+      ELEMENT_T* start = &src[i * count];
+      shmem_put32(dest, start, count, i);
     }
   }
   shmem_barrier_all();
 }
 
-void shmem_gather64(TYPE* dest, TYPE* src, int root, int count) {
+void shmem_gather32(ELEMENT_T* dest, ELEMENT_T* src, int root, int count) {
   int me = shmem_my_pe();
   int procs = shmem_n_pes();
   shmem_barrier_all();
-  TYPE* target_index = &dest[me * count];
-  shmem_put64(target_index, src, count, root);
+  ELEMENT_T* target_index = &dest[me * count];
+  shmem_put32(target_index, src, count, root);
   shmem_barrier_all();
 }
 
-void shmem_alltoall64(TYPE* dest, TYPE* src, int count) {
+void shmem_alltoall32(ELEMENT_T* dest, ELEMENT_T* src, int count) {
   int i;
   int me = shmem_my_pe();
   int procs = shmem_n_pes();
   shmem_barrier_all();
   for(i=0; i<procs; i++) {
-    shmem_put64(&dest[me*count], &src[i*count],  count, i);   
+    shmem_put32(&dest[me*count], &src[i*count],  count, i);   
   }
   shmem_barrier_all();
 }
+#endif
 
 #ifndef HCLIB_COMM_WORKER_FIXED
 void entrypoint(void *arg) {
@@ -260,13 +265,13 @@ int main (int argc, char *argv[]) {
   /* Variable Declarations */
 
   int  Numprocs,MyRank, Root = 0;
-  TYPE i,j,k, NoofElements, NoofElements_Bloc,
+  COUNT_T i,j,k, NoofElements, NoofElements_Bloc,
 				  NoElementsToSort;
-  TYPE       count, temp;
-  TYPE 	     *Input, *InputData;
-  TYPE 	     *Splitter, *AllSplitter;
-  TYPE 	     *Buckets, *BucketBuffer, *LocalBucket;
-  TYPE 	     *OutputBuffer, *Output, *target_index;
+  COUNT_T       count, temp;
+  ELEMENT_T 	     *Input, *InputData;
+  ELEMENT_T 	     *Splitter, *AllSplitter;
+  ELEMENT_T 	     *Buckets, *BucketBuffer, *LocalBucket;
+  ELEMENT_T 	     *OutputBuffer, *Output, *target_index;
 
   long start_time = seconds();
   long local_timer_start;
@@ -280,11 +285,11 @@ int main (int argc, char *argv[]) {
   Numprocs = shmem_n_pes ();
   MyRank = shmem_my_pe ();
 #endif
+  assert((TOTAL_ELEMENT_PER_PE * Numprocs) < INT_MAX && "Change count type from int to uint64_t");
   NoofElements = TOTAL_ELEMENT_PER_PE * Numprocs;
 
   /**** Reading Input ****/
-  
-  Input = (TYPE *) shmem_malloc (NoofElements*sizeof(*Input));
+  Input = (ELEMENT_T *) shmem_malloc (NoofElements*sizeof(*Input));
   if(Input == NULL) {
     printf("Error : Can not allocate memory \n");
   }
@@ -293,8 +298,8 @@ int main (int argc, char *argv[]) {
     printf("\n-----\nmkdir timedrun fake\n\n");
 
     /* Initialise random number generator  */ 
-    printf ("Generating input Array for Sorting %d uint64_t numbers\n",NoofElements);
-    srand48((TYPE)NoofElements);
+    printf ("Generating input Array for Sorting %d numbers\n",NoofElements);
+    srand48((ELEMENT_T)NoofElements);
     for(i=0; i< NoofElements; i++) {
       Input[i] = rand();
     }
@@ -303,17 +308,17 @@ int main (int argc, char *argv[]) {
   /**** Sending Data ****/
 
   NoofElements_Bloc = NoofElements / Numprocs;
-  InputData = (TYPE *) shmem_malloc (NoofElements_Bloc * sizeof (*InputData));
+  InputData = (ELEMENT_T *) shmem_malloc (NoofElements_Bloc * sizeof (*InputData));
   if(InputData == NULL) {
     printf("Error : Can not allocate memory \n");
   }
 
   local_timer_start = seconds();
 #if defined(_MPI_)
-  MPI_Scatter(Input, NoofElements_Bloc, TYPE_MPI, InputData, 
-				  NoofElements_Bloc, TYPE_MPI, Root, MPI_COMM_WORLD);
+  MPI_Scatter(Input, NoofElements_Bloc, ELEMENT_T_MPI, InputData, 
+				  NoofElements_Bloc, ELEMENT_T_MPI, Root, MPI_COMM_WORLD);
 #else
-  shmem_scatter64(InputData, Input, 0, NoofElements_Bloc);
+  shmem_scatter32(InputData, Input, 0, NoofElements_Bloc);
 #endif
   local_timer_end = (((double)(seconds()-local_timer_start))/1000000) * 1000;
   communication_timer += local_timer_end;
@@ -324,7 +329,7 @@ int main (int argc, char *argv[]) {
   sorting(InputData, NoofElements_Bloc);
 
   /**** Choosing Local Splitters ****/
-  Splitter = (TYPE *) shmem_malloc (sizeof (TYPE) * (Numprocs-1));
+  Splitter = (ELEMENT_T *) shmem_malloc (sizeof (ELEMENT_T) * (Numprocs-1));
   if(Splitter == NULL) {
     printf("Error : Can not allocate memory \n");
   }
@@ -333,17 +338,17 @@ int main (int argc, char *argv[]) {
   } 
 
   /**** Gathering Local Splitters at Root ****/
-  AllSplitter = (TYPE *) shmem_malloc (sizeof (TYPE) * Numprocs * (Numprocs-1));
+  AllSplitter = (ELEMENT_T *) shmem_malloc (sizeof (ELEMENT_T) * Numprocs * (Numprocs-1));
   if(AllSplitter == NULL) {
     printf("Error : Can not allocate memory \n");
   }
 
   local_timer_start = seconds();
 #if defined(_MPI_)
-  MPI_Gather (Splitter, Numprocs-1, TYPE_MPI, AllSplitter, Numprocs-1, 
-  				  TYPE_MPI, Root, MPI_COMM_WORLD);
+  MPI_Gather (Splitter, Numprocs-1, ELEMENT_T_MPI, AllSplitter, Numprocs-1, 
+  				  ELEMENT_T_MPI, Root, MPI_COMM_WORLD);
 #else
-  shmem_gather64(AllSplitter, Splitter, 0, Numprocs-1);
+  shmem_gather32(AllSplitter, Splitter, 0, Numprocs-1);
 #endif
   local_timer_end = (((double)(seconds()-local_timer_start))/1000000) * 1000;
   communication_timer += local_timer_end;
@@ -360,10 +365,10 @@ int main (int argc, char *argv[]) {
   local_timer_start = seconds(); 
   /**** Broadcasting Global Splitters ****/
 #if defined(_MPI_)
-  MPI_Bcast (Splitter, Numprocs-1, TYPE_MPI, 0, MPI_COMM_WORLD);
+  MPI_Bcast (Splitter, Numprocs-1, ELEMENT_T_MPI, 0, MPI_COMM_WORLD);
 #else
   RESET_BCAST_PSYNC;
-  shmem_broadcast64(Splitter, Splitter, Numprocs-1, 0, 0, 0, Numprocs, pSync);
+  shmem_broadcast32(Splitter, Splitter, Numprocs-1, 0, 0, 0, Numprocs, pSync);
   shmem_barrier_all();
 #endif
   local_timer_end = (((double)(seconds()-local_timer_start))/1000000) * 1000;
@@ -371,7 +376,7 @@ int main (int argc, char *argv[]) {
   printf("Bcast = %.3f\n",local_timer_end);  
 
   /**** Creating Numprocs Buckets locally ****/
-  Buckets = (TYPE *) shmem_malloc (sizeof (TYPE) * (NoofElements + Numprocs));  
+  Buckets = (ELEMENT_T *) shmem_malloc (sizeof (ELEMENT_T) * (NoofElements + Numprocs));  
   if(Buckets == NULL) {
     printf("Error : Can not allocate memory \n");
   }
@@ -399,24 +404,24 @@ int main (int argc, char *argv[]) {
       
   /**** Sending buckets to respective processors ****/
 
-  BucketBuffer = (TYPE *) shmem_malloc (sizeof (TYPE) * (NoofElements + Numprocs));
+  BucketBuffer = (ELEMENT_T *) shmem_malloc (sizeof (ELEMENT_T) * (NoofElements + Numprocs));
   if(BucketBuffer == NULL) {
     printf("Error : Can not allocate memory \n");
   }
 
   local_timer_start = seconds();
 #if defined(_MPI_)
-  MPI_Alltoall (Buckets, NoofElements_Bloc + 1, TYPE_MPI, BucketBuffer, 
-  					 NoofElements_Bloc + 1, TYPE_MPI, MPI_COMM_WORLD);
+  MPI_Alltoall (Buckets, NoofElements_Bloc + 1, ELEMENT_T_MPI, BucketBuffer, 
+  					 NoofElements_Bloc + 1, ELEMENT_T_MPI, MPI_COMM_WORLD);
 #else
-  shmem_alltoall64(BucketBuffer, Buckets, NoofElements_Bloc + 1);
+  shmem_alltoall32(BucketBuffer, Buckets, NoofElements_Bloc + 1);
 #endif
   local_timer_end = (((double)(seconds()-local_timer_start))/1000000) * 1000;
   communication_timer += local_timer_end;
   printf("AlltoAll = %.3f\n",local_timer_end);  
 
   /**** Rearranging BucketBuffer ****/
-  LocalBucket = (TYPE *) shmem_malloc (sizeof (TYPE) * 2 * NoofElements / Numprocs);
+  LocalBucket = (ELEMENT_T *) shmem_malloc (sizeof (ELEMENT_T) * 2 * NoofElements / Numprocs);
   if(LocalBucket == NULL) {
     printf("Error : Can not allocate memory \n");
   }
@@ -437,17 +442,17 @@ int main (int argc, char *argv[]) {
   sorting (&LocalBucket[1], NoElementsToSort); 
 
   /**** Gathering sorted sub blocks at root ****/
-  OutputBuffer = (TYPE *) shmem_malloc (sizeof(TYPE) * 2 * NoofElements);
+  OutputBuffer = (ELEMENT_T *) shmem_malloc (sizeof(ELEMENT_T) * 2 * NoofElements);
   if(OutputBuffer == NULL) {
     printf("Error : Can not allocate memory \n");
   }
 
   local_timer_start = seconds();
 #if defined(_MPI_)
-  MPI_Gather (LocalBucket, 2*NoofElements_Bloc, TYPE_MPI, OutputBuffer, 
-  				  2*NoofElements_Bloc, TYPE_MPI, Root, MPI_COMM_WORLD);
+  MPI_Gather (LocalBucket, 2*NoofElements_Bloc, ELEMENT_T_MPI, OutputBuffer, 
+  				  2*NoofElements_Bloc, ELEMENT_T_MPI, Root, MPI_COMM_WORLD);
 #else
-  shmem_gather64(OutputBuffer, LocalBucket, 0, (2*NoofElements_Bloc));
+  shmem_gather32(OutputBuffer, LocalBucket, 0, (2*NoofElements_Bloc));
 #endif
   local_timer_end = (((double)(seconds()-local_timer_start))/1000000) * 1000;
   communication_timer += local_timer_end;
@@ -457,7 +462,7 @@ int main (int argc, char *argv[]) {
 
   /**** Rearranging output buffer ****/
   if (MyRank == Root){
-    Output = (TYPE *) malloc (sizeof (TYPE) * NoofElements);
+    Output = (ELEMENT_T *) malloc (sizeof (ELEMENT_T) * NoofElements);
     count = 0;
     for(j=0; j<Numprocs; j++){
       k = 1;
@@ -465,7 +470,7 @@ int main (int argc, char *argv[]) {
         Output[count++] = OutputBuffer[(2*NoofElements/Numprocs) * j + k++];
       }
        printf ( "Number of Elements to be sorted : %d \n", NoofElements);
-       TYPE prev = 0;
+       ELEMENT_T prev = 0;
        int fail = 0;
        for (i=0; i<NoofElements; i++){
          if(Output[i] < prev) { printf("Failed at index %d\n",i); fail = 1; }
