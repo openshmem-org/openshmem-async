@@ -60,10 +60,12 @@
 #include <string.h>
 #include <sys/time.h>
 
-#define TOTAL_ELEMENT_PER_PE (4*1024*1024)
+//#define TOTAL_ELEMENT_PER_PE (4*1024*1024)
+#define TOTAL_ELEMENT_PER_PE (2*1024*1024)
 #define TYPE uint64_t
 #define VERIFY
-#define HC_GRANULARITY  3072
+#define HC_GRANULARITY  2048
+//#define HC_GRANULARITY  3072
 
 #ifdef _OSHMEM_
 #include <shmem.h>
@@ -77,6 +79,12 @@ long pSync[_SHMEM_BCAST_SYNC_SIZE];
 #define shmem_malloc malloc
 #define shmem_free free
 #endif
+
+long seconds() {
+   struct timeval t;
+   gettimeofday(&t,NULL);
+   return t.tv_sec*1000000+t.tv_usec;
+}
 
 static int compare(const void *i, const void *j)
 {
@@ -149,8 +157,13 @@ void sorting(TYPE* buffer, int size) {
   sort_data_t* buf = (sort_data_t*) malloc(sizeof(sort_data_t)); 
   buf->buffer = buffer;
   buf->left = 0;
-  buf->right = size - 1; 
+  buf->right = size - 1;
+  long start = seconds(); 
+  shmem_task_scope_begin();
   shmem_task_nbi(par_sort, buf, NULL);
+  shmem_task_scope_end();
+  double end = (((double)(seconds()-start))/1000000) * 1000; // msec
+  printf("Sorting (%d) = %.3f\n",size, end);
 }
 #else  // OpenMP
 void par_sort(TYPE* data, int left, int right) {
@@ -178,6 +191,7 @@ void par_sort(TYPE* data, int left, int right) {
 }
 
 void sorting(TYPE* buffer, int size) {
+  long start = seconds(); 
   #pragma omp parallel
   {
     #pragma omp single nowait
@@ -185,14 +199,10 @@ void sorting(TYPE* buffer, int size) {
       par_sort(buffer, 0, size-1);
     }
   }
+  double end = (((double)(seconds()-start))/1000000) * 1000; // msec
+  printf("Sorting (%d) = %.3f\n",size, end);
 }
 #endif
-
-long seconds() {
-   struct timeval t;
-   gettimeofday(&t,NULL);
-   return t.tv_sec*1000000+t.tv_usec;
-}
 
 #ifndef HCLIB_COMM_WORKER_FIXED
 void entrypoint(void *arg) {
@@ -215,16 +225,19 @@ int main (int argc, char *argv[]) {
 #endif
   /* Variable Declarations */
 
-  int 	     Numprocs,MyRank, Root = 0;
-  int 	     i,j,k, NoofElements, NoofElements_Bloc,
+  int  Numprocs,MyRank, Root = 0;
+  TYPE i,j,k, NoofElements, NoofElements_Bloc,
 				  NoElementsToSort;
-  int 	     count, temp;
+  TYPE       count, temp;
   TYPE 	     *Input, *InputData;
   TYPE 	     *Splitter, *AllSplitter;
   TYPE 	     *Buckets, *BucketBuffer, *LocalBucket;
   TYPE 	     *OutputBuffer, *Output;
 
   long start_time = seconds();
+  long local_timer_start;
+  double local_timer_end, end_time, init_time;
+  double communication_timer=0;
   
 #if defined(_MPI_)
   MPI_Comm_size(MPI_COMM_WORLD, &Numprocs);
@@ -261,6 +274,7 @@ int main (int argc, char *argv[]) {
     printf("Error : Can not allocate memory \n");
   }
 
+  local_timer_start = seconds();
 #if defined(_MPI_)
   MPI_Scatter(Input, NoofElements_Bloc, TYPE_MPI, InputData, 
 				  NoofElements_Bloc, TYPE_MPI, Root, MPI_COMM_WORLD);
@@ -274,9 +288,10 @@ int main (int argc, char *argv[]) {
   }
   shmem_barrier_all();
 #endif
-
-  double time0 = (((double)(seconds()-start_time))/1000000) * 1000; // msec
-  start_time = seconds();
+  local_timer_end = (((double)(seconds()-local_timer_start))/1000000) * 1000;
+  communication_timer += local_timer_end;
+  init_time = local_timer_end;
+  printf("Scatter = %.3f\n",local_timer_end);  
 
   /**** Sorting Locally ****/
   sorting(InputData, NoofElements_Bloc);
@@ -296,6 +311,7 @@ int main (int argc, char *argv[]) {
     printf("Error : Can not allocate memory \n");
   }
 
+  local_timer_start = seconds();
 #if defined(_MPI_)
   MPI_Gather (Splitter, Numprocs-1, TYPE_MPI, AllSplitter, Numprocs-1, 
   				  TYPE_MPI, Root, MPI_COMM_WORLD);
@@ -305,6 +321,9 @@ int main (int argc, char *argv[]) {
   shmem_put64(target_index, Splitter, Numprocs-1, Root);
   shmem_barrier_all();
 #endif
+  local_timer_end = (((double)(seconds()-local_timer_start))/1000000) * 1000;
+  communication_timer += local_timer_end;
+  printf("Gather = %.3f\n",local_timer_end);  
 
   /**** Choosing Global Splitters ****/
   if (MyRank == Root){
@@ -313,7 +332,8 @@ int main (int argc, char *argv[]) {
     for (i=0; i<Numprocs-1; i++)
       Splitter[i] = AllSplitter[(Numprocs-1)*(i+1)];
   }
-  
+ 
+  local_timer_start = seconds(); 
   /**** Broadcasting Global Splitters ****/
 #if defined(_MPI_)
   MPI_Bcast (Splitter, Numprocs-1, TYPE_MPI, 0, MPI_COMM_WORLD);
@@ -322,6 +342,9 @@ int main (int argc, char *argv[]) {
   shmem_broadcast64(Splitter, Splitter, Numprocs-1, 0, 0, 0, Numprocs, pSync);
   shmem_barrier_all();
 #endif
+  local_timer_end = (((double)(seconds()-local_timer_start))/1000000) * 1000;
+  communication_timer += local_timer_end;
+  printf("Bcast = %.3f\n",local_timer_end);  
 
   /**** Creating Numprocs Buckets locally ****/
   Buckets = (TYPE *) shmem_malloc (sizeof (TYPE) * (NoofElements + Numprocs));  
@@ -357,6 +380,7 @@ int main (int argc, char *argv[]) {
     printf("Error : Can not allocate memory \n");
   }
 
+  local_timer_start = seconds();
 #if defined(_MPI_)
   MPI_Alltoall (Buckets, NoofElements_Bloc + 1, TYPE_MPI, BucketBuffer, 
   					 NoofElements_Bloc + 1, TYPE_MPI, MPI_COMM_WORLD);
@@ -367,6 +391,9 @@ int main (int argc, char *argv[]) {
   }
   shmem_barrier_all();
 #endif
+  local_timer_end = (((double)(seconds()-local_timer_start))/1000000) * 1000;
+  communication_timer += local_timer_end;
+  printf("AlltoAll = %.3f\n",local_timer_end);  
 
   /**** Rearranging BucketBuffer ****/
   LocalBucket = (TYPE *) shmem_malloc (sizeof (TYPE) * 2 * NoofElements / Numprocs);
@@ -395,6 +422,7 @@ int main (int argc, char *argv[]) {
     printf("Error : Can not allocate memory \n");
   }
 
+  local_timer_start = seconds();
 #if defined(_MPI_)
   MPI_Gather (LocalBucket, 2*NoofElements_Bloc, TYPE_MPI, OutputBuffer, 
   				  2*NoofElements_Bloc, TYPE_MPI, Root, MPI_COMM_WORLD);
@@ -404,8 +432,12 @@ int main (int argc, char *argv[]) {
   shmem_put64(target_index, LocalBucket, 2*NoofElements_Bloc, Root);
   shmem_barrier_all();
 #endif
+  local_timer_end = (((double)(seconds()-local_timer_start))/1000000) * 1000;
+  communication_timer += local_timer_end;
+  printf("Gather = %.3f\n",local_timer_end);  
 
-  double time1 = (((double)(seconds()-start_time))/1000000) * 1000; // msec
+  end_time = (((double)(seconds()-start_time))/1000000) * 1000; // msec
+
   /**** Rearranging output buffer ****/
   if (MyRank == Root){
     Output = (TYPE *) malloc (sizeof (TYPE) * NoofElements);
@@ -424,12 +456,13 @@ int main (int argc, char *argv[]) {
        }
        if(fail) printf("Sorting FAILED\n");  
        else  printf("Sorting PASSED\n");
-       printf("Time for data initialization = %.3f\n",time0);
-       printf("Time for sorting = %.3f\n",time1);
-       printf("Total Time = %.3f\n",(time1+time0));
+       printf("Time for initialization (tInit) = %.3f\n",init_time);
+       printf("Time for communicaions (tComm)= %.3f\n",communication_timer); // communication_timer includes init_time
+       printf("Time for computations (tComp) = %.3f\n",(end_time - communication_timer));
+       printf("Total Time (excluding initalization = tTotal) = %.3f\n",(end_time - init_time));
        free(Output);
-       printf("============================ Tabulate Statistics ============================\ntime\n%.3f\n",(time1+time0));
-       printf("=============================================================================\n===== TEST PASSED in 0.0 msec =====\n");
+       printf("============================ Tabulate Statistics ============================\ntInit\ttComm\ttComp\ttTotal\n%.3f\t%.3f\t%.3f\t%.3f\n",init_time, communication_timer, (end_time - communication_timer), (end_time - init_time));
+       printf("=============================================================================\n===== TEST PASSED in %.3f msec =====\n",end_time);
   }/* MyRank==0*/
 
   shmem_free(Input);
