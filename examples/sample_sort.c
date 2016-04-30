@@ -61,7 +61,7 @@
 #include <sys/time.h>
 
 //#define TOTAL_ELEMENT_PER_PE (4*1024*1024)
-#define TOTAL_ELEMENT_PER_PE (2*1024*1024)
+#define TOTAL_ELEMENT_PER_PE (4*1024*1024)
 #define TYPE uint64_t
 #define VERIFY
 #define HC_GRANULARITY  2048
@@ -204,6 +204,40 @@ void sorting(TYPE* buffer, int size) {
 }
 #endif
 
+void shmem_scatter64(TYPE* dest, TYPE* src, int root, int count) {
+  int i;
+  int me = shmem_my_pe();
+  int procs = shmem_n_pes();
+  shmem_barrier_all();
+  if(me == root) {
+    for(i=0; i<procs; i++) {
+      TYPE* start = &src[i * count];
+      shmem_put64(dest, start, count, i);
+    }
+  }
+  shmem_barrier_all();
+}
+
+void shmem_gather64(TYPE* dest, TYPE* src, int root, int count) {
+  int me = shmem_my_pe();
+  int procs = shmem_n_pes();
+  shmem_barrier_all();
+  TYPE* target_index = &dest[me * count];
+  shmem_put64(target_index, src, count, root);
+  shmem_barrier_all();
+}
+
+void shmem_alltoall64(TYPE* dest, TYPE* src, int count) {
+  int i;
+  int me = shmem_my_pe();
+  int procs = shmem_n_pes();
+  shmem_barrier_all();
+  for(i=0; i<procs; i++) {
+    shmem_put64(&dest[me*count], &src[i*count],  count, i);   
+  }
+  shmem_barrier_all();
+}
+
 #ifndef HCLIB_COMM_WORKER_FIXED
 void entrypoint(void *arg) {
 #else
@@ -232,7 +266,7 @@ int main (int argc, char *argv[]) {
   TYPE 	     *Input, *InputData;
   TYPE 	     *Splitter, *AllSplitter;
   TYPE 	     *Buckets, *BucketBuffer, *LocalBucket;
-  TYPE 	     *OutputBuffer, *Output;
+  TYPE 	     *OutputBuffer, *Output, *target_index;
 
   long start_time = seconds();
   long local_timer_start;
@@ -278,15 +312,8 @@ int main (int argc, char *argv[]) {
 #if defined(_MPI_)
   MPI_Scatter(Input, NoofElements_Bloc, TYPE_MPI, InputData, 
 				  NoofElements_Bloc, TYPE_MPI, Root, MPI_COMM_WORLD);
-#else 
-  shmem_barrier_all();
-  if(MyRank == Root) {
-    for(i=0; i<Numprocs; i++) {
-      TYPE* start = &Input[i * NoofElements_Bloc];
-      shmem_put64(InputData, start, NoofElements_Bloc, i);
-    }
-  }
-  shmem_barrier_all();
+#else
+  shmem_scatter64(InputData, Input, 0, NoofElements_Bloc);
 #endif
   local_timer_end = (((double)(seconds()-local_timer_start))/1000000) * 1000;
   communication_timer += local_timer_end;
@@ -316,10 +343,7 @@ int main (int argc, char *argv[]) {
   MPI_Gather (Splitter, Numprocs-1, TYPE_MPI, AllSplitter, Numprocs-1, 
   				  TYPE_MPI, Root, MPI_COMM_WORLD);
 #else
-  shmem_barrier_all();
-  TYPE* target_index = &AllSplitter[MyRank * (Numprocs-1)];
-  shmem_put64(target_index, Splitter, Numprocs-1, Root);
-  shmem_barrier_all();
+  shmem_gather64(AllSplitter, Splitter, 0, Numprocs-1);
 #endif
   local_timer_end = (((double)(seconds()-local_timer_start))/1000000) * 1000;
   communication_timer += local_timer_end;
@@ -385,11 +409,7 @@ int main (int argc, char *argv[]) {
   MPI_Alltoall (Buckets, NoofElements_Bloc + 1, TYPE_MPI, BucketBuffer, 
   					 NoofElements_Bloc + 1, TYPE_MPI, MPI_COMM_WORLD);
 #else
-  shmem_barrier_all();
-  for(i=0; i<Numprocs; i++) {
-    shmem_put64(&BucketBuffer[MyRank*(NoofElements_Bloc + 1)], &Buckets[i*(NoofElements_Bloc + 1)],  NoofElements_Bloc + 1, i);   
-  }
-  shmem_barrier_all();
+  shmem_alltoall64(BucketBuffer, Buckets, NoofElements_Bloc + 1);
 #endif
   local_timer_end = (((double)(seconds()-local_timer_start))/1000000) * 1000;
   communication_timer += local_timer_end;
@@ -427,10 +447,7 @@ int main (int argc, char *argv[]) {
   MPI_Gather (LocalBucket, 2*NoofElements_Bloc, TYPE_MPI, OutputBuffer, 
   				  2*NoofElements_Bloc, TYPE_MPI, Root, MPI_COMM_WORLD);
 #else
-  shmem_barrier_all();
-  target_index = &OutputBuffer[MyRank * (2*NoofElements_Bloc)];
-  shmem_put64(target_index, LocalBucket, 2*NoofElements_Bloc, Root);
-  shmem_barrier_all();
+  shmem_gather64(OutputBuffer, LocalBucket, 0, (2*NoofElements_Bloc));
 #endif
   local_timer_end = (((double)(seconds()-local_timer_start))/1000000) * 1000;
   communication_timer += local_timer_end;
