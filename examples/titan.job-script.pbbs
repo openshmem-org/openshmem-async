@@ -6,7 +6,7 @@
 #PBS -l walltime=00:02:00,nodes=2
 #PBS -V
 
-THREADS=( 1, 4, 8, 12, 16 )
+THREADS=( 1 4 8 12 16 )
 ITER=1
 HCLIB=3	# 0=HCLIB_ONLY; 1=OMP_ONLY; 2=MPI_ONLY 3=HCLIB-and-OMP-and-MPI
 SHMEM_ASYNC_EXE="./sample_sort_shmem-async.x"
