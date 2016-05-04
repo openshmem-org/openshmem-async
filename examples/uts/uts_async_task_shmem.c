@@ -83,7 +83,7 @@ int n_leaves = 0;
 typedef struct _thread_metadata {
     size_t ntasks;
 } thread_metadata;
-thread_metadata t_metadata[MAX_OMP_THREADS];
+thread_metadata t_metadata[MAX_HCLIB_THREADS];
 #endif
 
 #define N_BUFFERED_STEALS 16
@@ -618,7 +618,7 @@ void async_task(void* args) {
   Node child;
   initNode(&child);
 
-  if ((*(param->parent)).numChildren < 0) {
+  if ((*(param->parent))->numChildren < 0) {
 	  genChildren(param->parent, &child);
   }
   free(args);
@@ -870,7 +870,7 @@ void compute(Node *root) {
 
   const int got_more_work = remote_steal(root);
   if (got_more_work == 1) {
-	compute();
+	compute(root);
   }
 }
 
@@ -886,7 +886,7 @@ int main(int argc, char *argv[]) {
   Node root;
 
 #ifdef THREAD_METADATA
-  memset(t_metadata, 0x00, MAX_OMP_THREADS * sizeof(thread_metadata));
+  memset(t_metadata, 0x00, MAX_HCLIB_THREADS * sizeof(thread_metadata));
 #endif
   memset(steal_buffer_locks, 0x00, MAX_SHMEM_THREADS * sizeof(long));
 
@@ -914,7 +914,7 @@ int main(int argc, char *argv[]) {
   initRootNode(&root, type);
 
   int n_omp_threads = GET_NUM_THREADS;
-  assert(n_omp_threads <= MAX_OMP_THREADS);
+  assert(n_omp_threads <= MAX_HCLIB_THREADS);
 
   shmem_barrier_all();
 
