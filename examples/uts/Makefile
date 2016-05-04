@@ -46,6 +46,9 @@ all: $(TARGETS)
 uts-omp-task-shmem: uts_omp_task_shmem.c $(RNG_SRC) $(COMMON_SRCS)
 	$(SHMCC) $(RNG_DEF) $(FLAGS) -o $@ $+ $(OMPCC_OPTS) $(OMPLD_OPTS) $(SHMCC_OPTS) $(SHMLD_OPTS)
 
+uts-async-task-shmem: uts_async_task_shmem.c $(RNG_SRC) $(COMMON_SRCS)
+	$(SHMCC) $(RNG_DEF) $(FLAGS) -o $@ $+ $(SHMCC_OPTS) $(SHMLD_OPTS) -lm
+
 
 clean:
 	rm -f *.o $(TARGETS)
