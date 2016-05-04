@@ -255,7 +255,7 @@ int impl_paramsToStr(char *strBuf, int ind) {
   ind += sprintf(strBuf+ind, "Execution strategy:  ");
   if (PARALLEL) {
     ind += sprintf(strBuf+ind, "Parallel search using %d threads total (%d "
-            "SHMEM PEs, %d OMP threads per PE)\n", npes * n_omp_threads,
+            "SHMEM PEs, %d hclib workers threads per PE)\n", npes * n_omp_threads,
             npes, n_omp_threads);
     if (doSteal) {
       ind += sprintf(strBuf+ind, "   Load balance by work stealing, chunk size = %d nodes\n",chunkSize);
@@ -882,7 +882,17 @@ void compute(Node *root) {
  *     - UPC is SPMD starting with main, OpenMP goes SPMD after
  *       parsing parameters
  */
-int main(int argc, char *argv[]) {
+#ifndef HCLIB_COMM_WORKER_FIXED
+void entrypoint(void *arg) {
+#else
+int main (int argc, char *argv[]) {
+  shmem_init();
+
+  /* determine benchmark parameters (all PEs) */
+  uts_parseParams(argc, argv);
+
+#endif
+
   Node root;
 
 #ifdef THREAD_METADATA
@@ -890,13 +900,8 @@ int main(int argc, char *argv[]) {
 #endif
   memset(steal_buffer_locks, 0x00, MAX_SHMEM_THREADS * sizeof(long));
 
-  shmem_init();
-
   pe = shmem_my_pe();
   npes = shmem_n_pes();
-
-  /* determine benchmark parameters (all PEs) */
-  uts_parseParams(argc, argv);
 
 #ifdef UTS_STAT
   if (stats) {
@@ -951,6 +956,21 @@ int main(int argc, char *argv[]) {
   }
 #endif
 
+#ifndef HCLIB_COMM_WORKER_FIXED
+}
+
+int main (int argc, char ** argv) {
+  shmem_init ();
+
+  /* determine benchmark parameters (all PEs) */
+  uts_parseParams(argc, argv);
+
+  shmem_workers_init(entrypoint, NULL);
+  shmem_finalize ();
+  return 0;
+}
+#else
   shmem_finalize();
   return 0;
 }
+#endif
