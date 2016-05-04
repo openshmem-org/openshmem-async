@@ -693,7 +693,7 @@ void genChildren(Node * parent, Node * child) {
     		  // create a new task
     		  task_data_t* param = (task_data_t*) malloc(sizeof(task_data_t));
     		  param->parent = &parent;
-    		  shmem_task_nbi(async_task, param);
+    		  shmem_task_nbi(async_task, param, NULL);
     	  }
       }
     }
