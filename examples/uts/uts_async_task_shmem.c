@@ -608,18 +608,15 @@ void initRootNode(Node * root, int type)
 #endif
 }
 
-
-typedef struct task_data_t {
-  Node **parent;
-} task_data_t;
+void genChildren(Node * parent, Node * child);
 
 void async_task(void* args) {
-  task_data_t *param = (task_data_t*) args;
+  Node *parent = (Node*) args;
   Node child;
   initNode(&child);
 
-  if ((*(param->parent))->numChildren < 0) {
-	  genChildren(param->parent, &child);
+  if (parent->numChildren < 0) {
+	  genChildren(parent, &child);
   }
   free(args);
 }
@@ -680,7 +677,7 @@ void genChildren(Node * parent, Node * child) {
           shmem_clear_lock(&steal_buffer_locks[pe]);
       }
       if (!made_available_for_stealing) {
-    	  if(parent.height < 9) {
+    	  if((parent.height < 9)) {
     		  // sequential case
     		  Node child;
     		  initNode(&child);
@@ -690,10 +687,10 @@ void genChildren(Node * parent, Node * child) {
     		  }
     	  }
     	  else {
-    		  // create a new task
-    		  task_data_t* param = (task_data_t*) malloc(sizeof(task_data_t));
-    		  param->parent = &parent;
-    		  shmem_task_nbi(async_task, param, NULL);
+    		 // create a new task
+    		 Node* args = (Node*) malloc(sizeof(Node));
+    		 memcpy(args, child, sizeof(Node));
+    		 shmem_task_nbi(async_task, args, NULL);
     	  }
       }
     }
