@@ -34,36 +34,34 @@
  ***********************************************************/
 
 #if defined(_ASYNC_OSHMEM_)
-//
-#include <pthread.h>
+/**** OpenMP Definitions ****/
 #define PARALLEL         1
 #define COMPILER_TYPE    1
 #define SHARED 
 #define SHARED_INDEF
 #define VOLATILE         volatile
-#define MAX_HCLIB_THREADS     32
+#define MAX_OMP_THREADS       16
 #define MAX_SHMEM_THREADS     64
-#define LOCK_T           pthread_mutex_t
+//#define LOCK_T           omp_lock_t
 #define GET_NUM_THREADS  shmem_n_workers()
 #define GET_THREAD_NUM   shmem_my_worker()
-#define SET_LOCK(zlk)    { if(pthread_mutex_lock(&zlk) != 0) fprintf(stderr, "Error acquiring mutex lock\n"); }
-#define UNSET_LOCK(zlk)  { if(pthread_mutex_unlock(&zlk) != 0) fprintf(stderr, "Error releasing mutex lock\n"); }
-#define INIT_LOCK(zlk)   zlk=thread_global_lock_alloc()
-#define INIT_SINGLE_LOCK(zlk) zlk=thread_global_lock_alloc()
+//#define SET_LOCK(zlk)    omp_set_lock(zlk)
+//#define UNSET_LOCK(zlk)  omp_unset_lock(zlk)
+//#define INIT_LOCK(zlk)   zlk=omp_global_lock_alloc()
+//#define INIT_SINGLE_LOCK(zlk) zlk=omp_global_lock_alloc()
 #define SMEMCPY          memcpy
 #define ALLOC            malloc
 #define BARRIER          
-#define ATOMIC_INCR(x)   __sync_fetch_and_add(&x, 1)
 // OpenMP helper function to match UPC lock allocation semantics
-pthread_mutex_t * thread_global_lock_alloc() {
-  pthread_mutex_t *lock = (pthread_mutex_t *) malloc(sizeof(pthread_mutex_t));
-  if(pthread_mutex_init(lock, NULL) != 0) fprintf(stderr, "Error initializing mutex lock\n");
-  return lock;
-}
-
+//omp_lock_t * omp_global_lock_alloc() {
+//  omp_lock_t *lock = (omp_lock_t *) malloc(sizeof(omp_lock_t) + 128);
+//  omp_init_lock(lock);
+//  return lock;
+//}
+#define ATOMIC_INCR(x)   __sync_fetch_and_add(&x, 1)
 
 #else
-#error Does not supports OMP
+#error Only supports OMP
 #endif /* END Par. Model Definitions */
 
 
@@ -83,7 +81,7 @@ int n_leaves = 0;
 typedef struct _thread_metadata {
     size_t ntasks;
 } thread_metadata;
-thread_metadata t_metadata[MAX_HCLIB_THREADS];
+thread_metadata t_metadata[MAX_OMP_THREADS];
 #endif
 
 #define N_BUFFERED_STEALS 16
@@ -234,7 +232,7 @@ char debug_str[1000];
 VOLATILE SHARED int cb_cancel;
 VOLATILE SHARED int cb_count;
 VOLATILE SHARED int cb_done;
-LOCK_T * cb_lock;
+//LOCK_T * cb_lock;
 
 /***********************************************************
  *  UTS Implementation Hooks                               *
@@ -249,13 +247,13 @@ char * impl_getName() {
 
 // construct string with all parameter settings 
 int impl_paramsToStr(char *strBuf, int ind) {
-  int n_omp_threads;
-  n_omp_threads = GET_NUM_THREADS;
+    int n_omp_threads;
+    n_omp_threads = GET_NUM_THREADS;
 
   ind += sprintf(strBuf+ind, "Execution strategy:  ");
   if (PARALLEL) {
     ind += sprintf(strBuf+ind, "Parallel search using %d threads total (%d "
-            "SHMEM PEs, %d hclib workers threads per PE)\n", npes * n_omp_threads,
+            "SHMEM PEs, %d OMP threads per PE)\n", npes * n_omp_threads,
             npes, n_omp_threads);
     if (doSteal) {
       ind += sprintf(strBuf+ind, "   Load balance by work stealing, chunk size = %d nodes\n",chunkSize);
@@ -610,15 +608,15 @@ void initRootNode(Node * root, int type)
 
 void genChildren(Node * parent, Node * child);
 
-void async_task(void* args) {
-  Node *parent = (Node*) args;
+void async_task(void *args) {
+  Node* parent = (Node*) args;
   Node child;
   initNode(&child);
 
   if (parent->numChildren < 0) {
-	  genChildren(parent, &child);
+    genChildren(parent, &child);
   }
-  free(args);
+  free(parent);
 }
 
 /* 
@@ -665,33 +663,26 @@ void genChildren(Node * parent, Node * child) {
           rng_spawn(parent_state, child_state, i);
       }
 
-      Node parent = *child;
-
       int made_available_for_stealing = 0;
       if (GET_THREAD_NUM == 0 && n_buffered_steals < N_BUFFERED_STEALS) {
           shmem_set_lock(&steal_buffer_locks[pe]);
           if (n_buffered_steals < N_BUFFERED_STEALS) {
-              steal_buffer[n_buffered_steals++] = parent;
+              steal_buffer[n_buffered_steals++] = *child;
               made_available_for_stealing = 1;
           }
           shmem_clear_lock(&steal_buffer_locks[pe]);
       }
       if (!made_available_for_stealing) {
-    	  if((parent.height < 9)) {
-    		  // sequential case
-    		  Node child;
-    		  initNode(&child);
-
-    		  if (parent.numChildren < 0) {
-    			  genChildren(&parent, &child);
-    		  }
-    	  }
-    	  else {
-    		 // create a new task
-    		 Node* args = (Node*) malloc(sizeof(Node));
-    		 memcpy(args, child, sizeof(Node));
-    		 shmem_task_nbi(async_task, args, NULL);
-    	  }
+            Node *node = (Node*) malloc(sizeof(Node));
+            memcpy(node, child, sizeof(Node));
+//#pragma omp task untied firstprivate(node) if(child->height < 9)
+            //async_task(node);
+            if(!(child->height < 9)) {
+              async_task(node);
+            }
+            else {
+              shmem_task_nbi(async_task, node, NULL);
+            }
       }
     }
   } else {
@@ -835,42 +826,6 @@ void showStats(double elapsedSecs) {
 }
 
 
-void compute(Node *root) {
-  int first = 1;
-  Node child;
-
-  initNode(&child);
-
-  shmem_task_scope_begin();
-  if (first) {
-	if (pe == 0) {
-	  genChildren(root, &child);
-	}
-  } else {
-	genChildren(root, &child);
-  }
-  first = 0;
-  shmem_task_scope_end();
-
-
-  if (n_buffered_steals > 0) {
-    shmem_set_lock(&steal_buffer_locks[pe]);
-    if (n_buffered_steals > 0) {
-      n_buffered_steals--;
-      memcpy(root, &steal_buffer[n_buffered_steals], sizeof(*root));
-      shmem_clear_lock(&steal_buffer_locks[pe]);
-      compute(root);
-    } else {
-      shmem_clear_lock(&steal_buffer_locks[pe]);
-    }
-  }
-
-  const int got_more_work = remote_steal(root);
-  if (got_more_work == 1) {
-	compute(root);
-  }
-}
-
 /*  Main() function for: Sequential, OpenMP, UPC, and Shmem
  *
  *  Notes on execution model:
@@ -893,7 +848,7 @@ int main (int argc, char *argv[]) {
   Node root;
 
 #ifdef THREAD_METADATA
-  memset(t_metadata, 0x00, MAX_HCLIB_THREADS * sizeof(thread_metadata));
+  memset(t_metadata, 0x00, MAX_OMP_THREADS * sizeof(thread_metadata));
 #endif
   memset(steal_buffer_locks, 0x00, MAX_SHMEM_THREADS * sizeof(long));
 
@@ -915,16 +870,56 @@ int main (int argc, char *argv[]) {
 
   initRootNode(&root, type);
 
-  int n_omp_threads = GET_NUM_THREADS;
-  assert(n_omp_threads <= MAX_HCLIB_THREADS);
-
   shmem_barrier_all();
 
   /* time parallel search */
   t1 = uts_wctime();
 
+  int n_omp_threads;
+  n_omp_threads = GET_NUM_THREADS;
+  assert(n_omp_threads <= MAX_OMP_THREADS);
+
 /********** SPMD Parallel Region **********/
-  compute(&root);
+shmem_task_scope_begin();
+  {
+      {
+          int first = 1;
+
+          Node child;
+retry:
+          initNode(&child);
+
+          if (first) {
+              if (pe == 0) {
+                  genChildren(&root, &child);
+              }
+          } else {
+              genChildren(&root, &child);
+          }
+          first = 0;
+
+          shmem_task_scope_end();
+          shmem_task_scope_begin();
+
+          if (n_buffered_steals > 0) {
+              shmem_set_lock(&steal_buffer_locks[pe]);
+              if (n_buffered_steals > 0) {
+                  n_buffered_steals--;
+                  memcpy(&root, &steal_buffer[n_buffered_steals], sizeof(root));
+                  shmem_clear_lock(&steal_buffer_locks[pe]);
+                  goto retry;
+              } else {
+                  shmem_clear_lock(&steal_buffer_locks[pe]);
+              }
+          }
+
+          const int got_more_work = remote_steal(&root);
+          if (got_more_work == 1) {
+              goto retry;
+          }
+      }
+  }
+  shmem_task_scope_end();
 
   if (pe != 0) {
       shmem_int_add(&n_nodes, n_nodes, 0);
@@ -971,3 +966,4 @@ int main (int argc, char ** argv) {
   return 0;
 }
 #endif
+
