@@ -664,7 +664,7 @@ void genChildren(Node * parent, Node * child) {
       }
 
       int made_available_for_stealing = 0;
-      if (GET_THREAD_NUM == 0 && n_buffered_steals < N_BUFFERED_STEALS) {
+      if (GET_THREAD_NUM == get_master_id() && n_buffered_steals < N_BUFFERED_STEALS) {
           shmem_set_lock(&steal_buffer_locks[pe]);
           if (n_buffered_steals < N_BUFFERED_STEALS) {
               steal_buffer[n_buffered_steals++] = *child;
@@ -899,7 +899,8 @@ retry:
           first = 0;
 
           shmem_task_scope_end();
-          move_continuation_on_master();
+          set_master_id();
+          //move_continuation_on_master();
           shmem_task_scope_begin();
 
           if (n_buffered_steals > 0) {
@@ -921,7 +922,8 @@ retry:
       }
   }
   shmem_task_scope_end();
-  move_continuation_on_master();
+  set_master_id();
+  //move_continuation_on_master();
 
   if (pe != 0) {
       shmem_int_add(&n_nodes, n_nodes, 0);
