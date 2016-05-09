@@ -899,6 +899,7 @@ retry:
           first = 0;
 
           shmem_task_scope_end();
+          move_continuation_on_master();
           shmem_task_scope_begin();
 
           if (n_buffered_steals > 0) {
@@ -920,6 +921,7 @@ retry:
       }
   }
   shmem_task_scope_end();
+  move_continuation_on_master();
 
   if (pe != 0) {
       shmem_int_add(&n_nodes, n_nodes, 0);
