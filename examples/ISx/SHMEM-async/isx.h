@@ -36,6 +36,27 @@ POSSIBILITY OF SUCH DAMAGE.
 #include <inttypes.h>
 #include "timer.h"
 #include "pcg_basic.h"
+
+/*
+ * This is per worker counter used in allocating buckets.
+ * Helps in updating same index in the bucket in case
+ * of key repetition.
+ *
+ * Code borrowed from resource_workers branch of hclib
+ */
+#define CACHE_LINE_LEN_IN_BYTES 32
+#define MAX_HCLIB_WORKERS 16
+typedef struct counter_t {
+  KEY_TYPE counter;
+  char padding[CACHE_LINE_LEN_IN_BYTES - sizeof(KEY_TYPE)];
+} counter_t;
+typedef struct counter_worker_t {
+  counter_t count[MAX_HCLIB_WORKERS];
+} counter_worker_t; 
+
+#define INCREMENT(p,index) p[index].count[shmem_my_worker()].counter++
+#define GET_INDEX(p,index) p[index].count[shmem_my_worker()].counter
+
 /*
  * Ensures the command line parameters and values specified in params.h
  * are valid and will not cause problems.
@@ -98,14 +119,14 @@ static inline KEY_TYPE * exchange_keys(int const * restrict const send_offsets,
 /*
  * Count the occurence of each key within my bucket. 
  */
-static inline int * count_local_keys(KEY_TYPE const * restrict const my_bucket_keys);
+static inline counter_worker_t * count_local_keys(KEY_TYPE const * restrict const my_bucket_keys);
 
 /*
  * Verifies the correctness of the sort. 
  * Ensures all keys after the exchange are within a PE's bucket boundaries.
  * Ensures the final number of keys is equal to the initial.
  */
-static int verify_results(int const * restrict const my_local_key_counts, 
+static int verify_results(counter_worker_t const * restrict const my_local_key_counts, 
                            KEY_TYPE const * restrict const my_local_keys);
 
 /*

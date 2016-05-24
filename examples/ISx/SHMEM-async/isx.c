@@ -58,6 +58,7 @@ uint64_t NUM_KEYS_PER_PE; // Number of keys generated on each PE
 uint64_t NUM_BUCKETS; // The number of buckets in the bucket sort
 uint64_t BUCKET_WIDTH; // The size of each bucket
 uint64_t MAX_KEY_VAL; // The maximum possible generated key value
+char* log_file;
 
 volatile int whose_turn;
 
@@ -74,22 +75,40 @@ KEY_TYPE my_bucket_keys[KEY_BUFFER_SIZE];
 int * permute_array;
 #endif
 
-int main(const int argc,  char ** argv)
-{
-  shmem_init();
+#ifndef HCLIB_COMM_WORKER_FIXED
+void entrypoint(void *arg) {
+#else
+int main (int argc, char *argv[]) {
 
-  init_shmem_sync_array(pSync); 
+  shmem_init ();
 
   char * log_file = parse_params(argc, argv);
 
-  int err = bucket_sort();
+#endif
+  init_shmem_sync_array(pSync); 
+
+  bucket_sort();
 
   log_times(log_file);
 
-  shmem_finalize();
-  return err;
+  //return err;
+#ifndef HCLIB_COMM_WORKER_FIXED
 }
 
+int main (int argc, char ** argv) {
+  shmem_init ();
+
+  log_file = parse_params(argc, argv);
+  shmem_workers_init(entrypoint, NULL);
+
+  shmem_finalize ();
+  return 0;
+}
+
+#else // HCLIB_COMM_WORKER_FIXED
+  shmem_finalize();
+}
+#endif
 
 // Parses all of the command line input and definitions in params.h
 // to set all necessary runtime values and options
@@ -216,7 +235,7 @@ static int bucket_sort(void)
 
     my_bucket_size = receive_offset;
 
-    int * my_local_key_counts = count_local_keys(my_bucket_keys);
+    counter_worker_t* my_local_key_counts = count_local_keys(my_bucket_keys);
 
     shmem_barrier_all();
 
@@ -483,10 +502,10 @@ static inline KEY_TYPE * exchange_keys(int const * restrict const send_offsets,
  * minimum key value to allow indexing from 0.
  * my_bucket_keys: All keys in my bucket unsorted [my_rank * BUCKET_WIDTH, (my_rank+1)*BUCKET_WIDTH)
  */
-static inline int * count_local_keys(KEY_TYPE const * restrict const my_bucket_keys)
+static inline counter_worker_t * count_local_keys(KEY_TYPE const * restrict const my_bucket_keys)
 {
-  int * restrict const my_local_key_counts = malloc(BUCKET_WIDTH * sizeof(int));
-  memset(my_local_key_counts, 0, BUCKET_WIDTH * sizeof(int));
+  counter_worker_t* restrict const my_local_key_counts = malloc(BUCKET_WIDTH * sizeof(counter_worker_t));
+  memset(my_local_key_counts, 0, BUCKET_WIDTH * sizeof(counter_worker_t));
 
   timer_start(&timers[TIMER_SORT]);
 
@@ -500,7 +519,7 @@ static inline int * count_local_keys(KEY_TYPE const * restrict const my_bucket_k
     assert(my_bucket_keys[i] >= my_min_key);
     assert(key_index < BUCKET_WIDTH);
 
-    my_local_key_counts[key_index]++;
+    INCREMENT(my_local_key_counts, key_index);
   }
   timer_stop(&timers[TIMER_SORT]);
 
@@ -510,7 +529,7 @@ static inline int * count_local_keys(KEY_TYPE const * restrict const my_bucket_k
   sprintf(msg,"Rank %d: Bucket Size %lld | Local Key Counts:", my_rank, my_bucket_size);
   for(uint64_t i = 0; i < BUCKET_WIDTH; ++i){
     if(i < PRINT_MAX)
-    sprintf(msg + strlen(msg),"%d ", my_local_key_counts[i]);
+    sprintf(msg + strlen(msg),"%d ", GET_INDEX(my_local_key_counts, i));
   }
   sprintf(msg + strlen(msg),"\n");
   printf("%s",msg);
@@ -526,7 +545,7 @@ static inline int * count_local_keys(KEY_TYPE const * restrict const my_bucket_k
  * Ensures all keys are within a PE's bucket boundaries.
  * Ensures the final number of keys is equal to the initial.
  */
-static int verify_results(int const * restrict const my_local_key_counts,
+static int verify_results(counter_worker_t const * restrict const my_local_key_counts,
                            KEY_TYPE const * restrict const my_local_keys)
 {
 
@@ -552,7 +571,7 @@ static int verify_results(int const * restrict const my_local_key_counts,
   // Verify the sum of the key population equals the expected bucket size
   long long int bucket_size_test = 0;
   for(uint64_t i = 0; i < BUCKET_WIDTH; ++i){
-    bucket_size_test +=  my_local_key_counts[i];
+    bucket_size_test +=  GET_INDEX(my_local_key_counts, i);
   }
   if(bucket_size_test != my_bucket_size){
       printf("Rank %d Failed Verification!\n",my_rank);
