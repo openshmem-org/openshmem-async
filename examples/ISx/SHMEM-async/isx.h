@@ -55,7 +55,8 @@ typedef struct counter_worker_t {
 } counter_worker_t; 
 
 #define INCREMENT(p,index) p[index].count[shmem_my_worker()].counter++
-#define GET_INDEX(p,index) p[index].count[shmem_my_worker()].counter
+#define AGGREGATE(p, index) {int _i; for(_i=1; _i<MAX_HCLIB_WORKERS; _i++) p[index].count[0].counter+=p[index].count[_i].counter;}
+#define GET_INDEX(p,index) p[index].count[0].counter
 
 /*
  * Ensures the command line parameters and values specified in params.h

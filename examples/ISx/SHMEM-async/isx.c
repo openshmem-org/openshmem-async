@@ -495,6 +495,23 @@ static inline KEY_TYPE * exchange_keys(int const * restrict const send_offsets,
   return my_bucket_keys;
 }
 
+typedef struct parfor_args_t {
+  KEY_TYPE const * restrict const my_bucket_keys;
+  int my_min_key;
+  counter_worker_t* restrict const my_local_key_counts;
+} parfor_args_t;
+
+void parfor_async(void * argv,int idx) {
+  parfor_args_t* arg = (parfor_args_t*) argv;
+  KEY_TYPE const * restrict const my_bucket_keys = arg->my_bucket_keys;
+  int my_min_key = arg->my_min_key;
+  counter_worker_t* restrict const my_local_key_counts = arg->my_local_key_counts;
+
+  const unsigned int key_index = my_bucket_keys[idx] - my_min_key;
+  assert(my_bucket_keys[idx] >= my_min_key);
+  assert(key_index < BUCKET_WIDTH);
+  INCREMENT(my_local_key_counts, key_index); 
+}
 
 /*
  * Counts the occurence of each key in my bucket. 
@@ -512,15 +529,21 @@ static inline counter_worker_t * count_local_keys(KEY_TYPE const * restrict cons
   const int my_rank = shmem_my_pe();
   const int my_min_key = my_rank * BUCKET_WIDTH;
 
-  // Count the occurences of each key in my bucket
-  for(long long int i = 0; i < my_bucket_size; ++i){
-    const unsigned int key_index = my_bucket_keys[i] - my_min_key;
+  parfor_args_t parfor_args = {my_bucket_keys, my_min_key, my_local_key_counts};
+  //TODO: Currently hclib expects the bounds as 'int' but it may overflow in this particular case. Check in case of error.
+  int lowBound = 0;
+  int highBound = my_bucket_size;
+  int stride = 1;
+  int tile_size = 1;
+  int loop_dimension = 1;
+  shmem_task_scope_begin();
+  shmem_parallel_for_nbi(parfor_async, &parfor_args, NULL, lowBound, highBound, stride, tile_size, loop_dimension, SHMEM_PARALLEL_FOR_RECURSIVE_MODE);
+  shmem_task_scope_end();
 
-    assert(my_bucket_keys[i] >= my_min_key);
-    assert(key_index < BUCKET_WIDTH);
-
-    INCREMENT(my_local_key_counts, key_index);
+  for(uint64_t i = lowBound; i < highBound; ++i){
+    AGGREGATE(my_local_key_counts, i);
   }
+
   timer_stop(&timers[TIMER_SORT]);
 
 #ifdef DEBUG
