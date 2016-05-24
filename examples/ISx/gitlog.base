@@ -1,0 +1,7 @@
+commit 3d458f574976c38e38686cce6a7a5c1dbb23a46a
+Author: Ulf R. Hanebutte <ulfhanebutte@users.noreply.github.com>
+Date:   Wed Feb 10 08:19:21 2016 -0800
+
+    Update .travis.yml
+    
+    update to new github location of Sandia Open SHMEM
