@@ -522,7 +522,7 @@ void parfor_async(void * argv,int idx) {
 static inline counter_worker_t * count_local_keys(KEY_TYPE const * restrict const my_bucket_keys)
 {
   counter_worker_t* restrict const my_local_key_counts = malloc(BUCKET_WIDTH * sizeof(counter_worker_t));
-  memset(my_local_key_counts, 0, BUCKET_WIDTH * sizeof(counter_worker_t));
+  memset(my_local_key_counts, 0x00, BUCKET_WIDTH * sizeof(counter_worker_t));
 
   timer_start(&timers[TIMER_SORT]);
 
@@ -540,7 +540,7 @@ static inline counter_worker_t * count_local_keys(KEY_TYPE const * restrict cons
   shmem_parallel_for_nbi(parfor_async, &parfor_args, NULL, lowBound, highBound, stride, tile_size, loop_dimension, SHMEM_PARALLEL_FOR_RECURSIVE_MODE);
   shmem_task_scope_end();
 
-  for(uint64_t i = lowBound; i < highBound; ++i){
+  for(uint64_t i = 0; i < BUCKET_WIDTH; ++i){
     AGGREGATE(my_local_key_counts, i);
   }
 
