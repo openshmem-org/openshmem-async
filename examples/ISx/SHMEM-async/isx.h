@@ -36,28 +36,6 @@ POSSIBILITY OF SUCH DAMAGE.
 #include <inttypes.h>
 #include "timer.h"
 #include "pcg_basic.h"
-
-/*
- * This is per worker counter used in allocating buckets.
- * Helps in updating same index in the bucket in case
- * of key repetition.
- *
- * Code borrowed from resource_workers branch of hclib
- */
-#define CACHE_LINE_LEN_IN_BYTES 32
-#define MAX_HCLIB_WORKERS 16
-typedef struct counter_t {
-  KEY_TYPE counter;
-  char padding[CACHE_LINE_LEN_IN_BYTES - sizeof(KEY_TYPE)];
-} counter_t;
-typedef struct counter_worker_t {
-  counter_t count[MAX_HCLIB_WORKERS];
-} counter_worker_t; 
-
-#define INCREMENT(p,index) p[index].count[shmem_my_worker()].counter++
-#define AGGREGATE(p, index) {int _i; for(_i=1; _i<MAX_HCLIB_WORKERS; _i++) p[index].count[0].counter+=p[index].count[_i].counter;}
-#define GET_INDEX(p,index) p[index].count[0].counter
-
 /*
  * Ensures the command line parameters and values specified in params.h
  * are valid and will not cause problems.
@@ -87,13 +65,13 @@ static void shuffle(void * array, size_t n, size_t size);
 /*
  * Generates random keys [0, MAX_KEY_VAL] on each rank using the time and rank as a seed
  */
-static inline KEY_TYPE * make_input(void);
+static inline KEY_TYPE ** make_input(void);
 
 /*
  * Computes the size of each local bucket by iterating all local keys and incrementing
  * their corresponding bucket's size
  */
-static inline int * count_local_bucket_sizes(KEY_TYPE const * restrict const my_keys);
+static inline int ** count_local_bucket_sizes(KEY_TYPE const ** restrict const my_keys);
 
 /*
  * Computes the prefix scan of the local bucket sizes to determine the starting locations
@@ -101,34 +79,38 @@ static inline int * count_local_bucket_sizes(KEY_TYPE const * restrict const my_
  * Stores a copy of the bucket offsets in send_offsets for use in exchanging keys because the
  * original bucket_offsets array is modified in the bucketize function
  */
-static inline int * compute_local_bucket_offsets(int const * restrict const local_bucket_sizes,
-                                          int ** send_offsets);
+static inline int ** compute_local_bucket_offsets(int const ** restrict const local_bucket_sizes,
+                                          int *** send_offsets);
 
 /*
  * Rearranges all local keys into their corresponding local bucket.
  * The contents of each bucket are not sorted.
  */
-static inline KEY_TYPE * bucketize_local_keys(KEY_TYPE const * restrict my_keys,
-                                       int * restrict const local_bucket_offsets);
+static inline KEY_TYPE ** bucketize_local_keys(KEY_TYPE const ** restrict my_keys,
+                                       int ** restrict const local_bucket_offsets);
 /*
  * Each PE sends the contents of its local buckets to the PE that owns that bucket.
  */
-static inline KEY_TYPE * exchange_keys(int const * restrict const send_offsets,
-                                int const * restrict const local_bucket_sizes,
-                                KEY_TYPE const * restrict const local_bucketed_keys);
+static inline KEY_TYPE ** exchange_keys(int const ** restrict const send_offsets,
+                                int const ** restrict const local_bucket_sizes,
+                                KEY_TYPE const ** restrict const local_bucketed_keys);
 
 /*
  * Count the occurence of each key within my bucket. 
  */
-static inline counter_worker_t * count_local_keys(KEY_TYPE const * restrict const my_bucket_keys);
+static inline int ** count_local_keys();
 
 /*
  * Verifies the correctness of the sort. 
  * Ensures all keys after the exchange are within a PE's bucket boundaries.
  * Ensures the final number of keys is equal to the initial.
  */
-static int verify_results(counter_worker_t const * restrict const my_local_key_counts, 
-                           KEY_TYPE const * restrict const my_local_keys);
+static int verify_results(int const ** restrict const my_local_key_counts);
+
+/*
+ * Seeds each rank based on the rank number, worker id and time
+ */
+static inline pcg32_random_t seed_my_worker(int wid);
 
 /*
  * Seeds each rank based on the rank number and time

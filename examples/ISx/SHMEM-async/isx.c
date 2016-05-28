@@ -60,16 +60,49 @@ uint64_t BUCKET_WIDTH; // The size of each bucket
 uint64_t MAX_KEY_VAL; // The maximum possible generated key value
 char* log_file;
 
+/*
+ * This macro sets the maximum number of workers allowed
+ * to participate in computation per pe. In actual
+ * when the computation is run, there can be 1-n number
+ * of workers (n<=WORKERS_PER_PE).
+ *
+ * In AsyncSHMEM model, these workers are the hclib workers.
+ */
+#define WORKERS_PER_PE 16 // == Total number of cores/node on Titan
+uint64_t NUM_KEYS_PER_WORKERS;
+int actual_num_workers;
+#define WORKERS_PER_PE 2
+#define GET_VIRTUAL_RANK(rank, wid) ((rank * WORKERS_PER_PE) + (wid))
+#define GET_REAL_RANK(vrank) ((int)(vrank / WORKERS_PER_PE))
+// This is done due to current limitation that entrypoint function
+// cannot accept arguments. This will be resolved in future version of 
+// AsyncSHMEM
+int m_argc;
+char** m_argv;
+
 volatile int whose_turn;
 
-long long int receive_offset = 0;
-long long int my_bucket_size = 0;
+long long int receive_offset[WORKERS_PER_PE];
+long long int my_bucket_size[WORKERS_PER_PE];
 
-
-#define KEY_BUFFER_SIZE (1uLL<<28uLL)
+/*
+ * In case of WORKERS_PER_PE>1, setting KEY_BUFFER_SIZE=(1uLL<<28uLL) 
+ * would cause compilation error (in gasnet) with the declaration of:
+ * "KEY_TYPE my_bucket_keys[WORKERS_PER_PE][KEY_BUFFER_SIZE];"
+ * I am not sure why that is causing the problem. But decreasing
+ * the KEY_BUFFER_SIZE as this removes that compilation bug.
+ *
+ * As an alternative, I left KEY_BUFFER_SIZE=(1uLL<<28uLL)
+ * and used shmem_malloc to allocate:
+ * "KEY_TYPE **my_bucket_keys"
+ * This resolved the compilation error but writing to this
+ * array my_bucket_keys using shmem_int_put was causing 
+ * SEGFAULT.
+ */
+#define KEY_BUFFER_SIZE ((int)((1uLL<<28uLL)/WORKERS_PER_PE))
 
 // The receive array for the All2All exchange
-KEY_TYPE my_bucket_keys[KEY_BUFFER_SIZE];
+KEY_TYPE my_bucket_keys[WORKERS_PER_PE][KEY_BUFFER_SIZE];
 
 #ifdef PERMUTE
 int * permute_array;
@@ -81,10 +114,13 @@ void entrypoint(void *arg) {
 int main (int argc, char *argv[]) {
 
   shmem_init ();
-
-  char * log_file = parse_params(argc, argv);
+  m_argc = argc;
+  m_argv = argv;
 
 #endif
+
+  char * log_file = parse_params(m_argc, m_argv);
+
   init_shmem_sync_array(pSync); 
 
   bucket_sort();
@@ -97,8 +133,9 @@ int main (int argc, char *argv[]) {
 
 int main (int argc, char ** argv) {
   shmem_init ();
+  m_argc = argc;
+  m_argv = argv;
 
-  log_file = parse_params(argc, argv);
   shmem_workers_init(entrypoint, NULL);
 
   shmem_finalize ();
@@ -125,9 +162,10 @@ static char * parse_params(const int argc, char ** argv)
     exit(1);
   }
 
+  actual_num_workers = shmem_n_workers();
   NUM_PES = (uint64_t) shmem_n_pes();
   MAX_KEY_VAL = DEFAULT_MAX_KEY;
-  NUM_BUCKETS = NUM_PES;
+  NUM_BUCKETS = NUM_PES*WORKERS_PER_PE;
   BUCKET_WIDTH = (uint64_t) ceil((double)MAX_KEY_VAL/NUM_BUCKETS);
   char * log_file = argv[2];
   char scaling_msg[64];
@@ -136,20 +174,29 @@ static char * parse_params(const int argc, char ** argv)
     case STRONG:
       {
         TOTAL_KEYS = (uint64_t) atoi(argv[1]);
-        NUM_KEYS_PER_PE = (uint64_t) ceil((double)TOTAL_KEYS/NUM_PES);
+        NUM_KEYS_PER_WORKERS = (uint64_t) ceil((double)TOTAL_KEYS/(NUM_PES * WORKERS_PER_PE));
+        NUM_KEYS_PER_PE = NUM_KEYS_PER_WORKERS * WORKERS_PER_PE;
         sprintf(scaling_msg,"STRONG");
         break;
       }
 
     case WEAK:
       {
-        NUM_KEYS_PER_PE = (uint64_t) (atoi(argv[1]));
+        // When comparing N PEs with 0 workers to X PEs with Y workers (where, N = X*Y)
+        // we need to ensure we have same number of total keys across 
+        // both the implementations.
+        // Hence, for case N PEs with 0 workers, TOTAL_KEYS = N * NUM_KEYS_PER_PE
+        // and for case X PEs with Y workers, TOTAL_KEYS = X * Y * NUM_KEYS_PER_PE
+        NUM_KEYS_PER_PE = ((uint64_t) (atoi(argv[1]))) * actual_num_workers;
+        assert(NUM_KEYS_PER_PE%WORKERS_PER_PE == 0); // if this is not satisfied, change the input
+        NUM_KEYS_PER_WORKERS = NUM_KEYS_PER_PE / WORKERS_PER_PE;
         sprintf(scaling_msg,"WEAK");
         break;
       }
 
     case WEAK_ISOBUCKET:
       {
+        assert("Broken currently due to WORKERS_PER_PE" && 0);
         NUM_KEYS_PER_PE = (uint64_t) (atoi(argv[1]));
         BUCKET_WIDTH = ISO_BUCKET_WIDTH; 
         MAX_KEY_VAL = (uint64_t) (NUM_PES * BUCKET_WIDTH);
@@ -182,6 +229,7 @@ static char * parse_params(const int argc, char ** argv)
     printf("Random Permute Used in ATA.\n");
 #endif
     printf("  Number of Keys per PE: %" PRIu64 "\n", NUM_KEYS_PER_PE);
+    printf("  Number of Keys per Workers: %" PRIu64 "\n", NUM_KEYS_PER_WORKERS);
     printf("  Max Key Value: %" PRIu64 "\n", MAX_KEY_VAL);
     printf("  Bucket Width: %" PRIu64 "\n", BUCKET_WIDTH);
     printf("  Number of Iterations: %u\n", NUM_ITERATIONS);
@@ -211,6 +259,9 @@ static int bucket_sort(void)
 
   for(uint64_t i = 0; i < (NUM_ITERATIONS + BURN_IN); ++i)
   {
+    // Reset offsets used in exchange_keys
+    memset(receive_offset, 0x00, WORKERS_PER_PE * sizeof(long long int));
+    memset(my_bucket_size, 0x00, WORKERS_PER_PE * sizeof(long long int));
 
     // Reset timers after burn in 
     if(i == BURN_IN){ init_timers(NUM_ITERATIONS); } 
@@ -219,23 +270,28 @@ static int bucket_sort(void)
 
     timer_start(&timers[TIMER_TOTAL]);
 
-    KEY_TYPE * my_keys = make_input();
+// Time phase = 1703.453
+    KEY_TYPE ** my_keys = make_input();
 
-    int * local_bucket_sizes = count_local_bucket_sizes(my_keys);
+// Time phase = 1029.996
+    int ** local_bucket_sizes = count_local_bucket_sizes(my_keys);
 
-    int * send_offsets;
-    int * local_bucket_offsets = compute_local_bucket_offsets(local_bucket_sizes,
+    int ** send_offsets;
+// Time phase = 0.002
+    int ** local_bucket_offsets = compute_local_bucket_offsets(local_bucket_sizes,
                                                                    &send_offsets);
 
-    KEY_TYPE * my_local_bucketed_keys =  bucketize_local_keys(my_keys, local_bucket_offsets);
+// Time phase = 1699.666
+    KEY_TYPE ** my_local_bucketed_keys =  bucketize_local_keys(my_keys, local_bucket_offsets);
 
-    KEY_TYPE * my_bucket_keys = exchange_keys(send_offsets, 
-                                              local_bucket_sizes,
-                                              my_local_bucketed_keys);
+// Time phase = 121.137
+    exchange_keys(send_offsets, 
+                  local_bucket_sizes,
+                  my_local_bucketed_keys);
 
-    my_bucket_size = receive_offset;
-
-    counter_worker_t* my_local_key_counts = count_local_keys(my_bucket_keys);
+    memcpy(my_bucket_size, receive_offset, WORKERS_PER_PE*sizeof(long long int)); 
+// Time phase = 2790.646
+    int** my_local_key_counts = count_local_keys();
 
     shmem_barrier_all();
 
@@ -243,18 +299,25 @@ static int bucket_sort(void)
 
     // Only the last iteration is verified
     if(i == NUM_ITERATIONS) { 
-      err = verify_results(my_local_key_counts, my_bucket_keys);
+      err = verify_results(my_local_key_counts);
     }
 
-    // Reset receive_offset used in exchange_keys
-    receive_offset = 0;
-
+#if 0
+    for(int wid=0; wid<WORKERS_PER_PE; wid++) {
+      free(my_local_bucketed_keys[wid]);
+      free(my_keys[wid]);
+      free(local_bucket_sizes[wid]);
+      free(local_bucket_offsets[wid]);
+      free(send_offsets[wid]);
+      free(my_local_key_counts[wid]);
+    }
     free(my_local_bucketed_keys);
     free(my_keys);
     free(local_bucket_sizes);
     free(local_bucket_offsets);
     free(send_offsets);
     free(my_local_key_counts);
+#endif
 
     shmem_barrier_all();
   }
@@ -267,16 +330,21 @@ static int bucket_sort(void)
  * Generates uniformly random keys [0, MAX_KEY_VAL] on each rank using the time and rank
  * number as a seed
  */
-static KEY_TYPE * make_input(void)
+static KEY_TYPE ** make_input(void)
 {
   timer_start(&timers[TIMER_INPUT]);
 
-  KEY_TYPE * restrict const my_keys = malloc(NUM_KEYS_PER_PE * sizeof(KEY_TYPE));
-
-  pcg32_random_t rng = seed_my_rank();
-
-  for(uint64_t i = 0; i < NUM_KEYS_PER_PE; ++i) {
-    my_keys[i] = pcg32_boundedrand_r(&rng, MAX_KEY_VAL);
+  KEY_TYPE ** restrict const my_keys = (KEY_TYPE**) shmem_malloc(WORKERS_PER_PE * sizeof(KEY_TYPE*));
+  for(int wid=0; wid<WORKERS_PER_PE; wid++) {
+    my_keys[wid] = (KEY_TYPE*) shmem_malloc(NUM_KEYS_PER_WORKERS * sizeof(KEY_TYPE));
+  }
+ 
+  // parallel block
+  for(int wid=0; wid<WORKERS_PER_PE; wid++) {
+    pcg32_random_t rng = seed_my_worker(wid);
+    for(uint64_t i = 0; i < NUM_KEYS_PER_WORKERS; ++i) {
+      my_keys[wid][i] = pcg32_boundedrand_r(&rng, MAX_KEY_VAL);
+    }
   }
 
   timer_stop(&timers[TIMER_INPUT]);
@@ -285,13 +353,16 @@ static KEY_TYPE * make_input(void)
   wait_my_turn();
   char msg[1024];
   const int my_rank = shmem_my_pe();
-  sprintf(msg,"Rank %d: Initial Keys: ", my_rank);
-  for(uint64_t i = 0; i < NUM_KEYS_PER_PE; ++i){
-    if(i < PRINT_MAX)
-    sprintf(msg + strlen(msg),"%d ", my_keys[i]);
+  for(int wid=0; wid<WORKERS_PER_PE; wid++) {
+    int v_rank = GET_VIRTUAL_RANK(my_rank, wid);
+    sprintf(msg,"V_Rank %d: Initial Keys: ", v_rank);
+    for(uint64_t i = 0; i < NUM_KEYS_PER_WORKERS; ++i){
+      if(i < PRINT_MAX)
+      sprintf(msg + strlen(msg),"%d ", my_keys[wid][i]);
+    }
+    sprintf(msg + strlen(msg),"\n");
+    printf("%s",msg);
   }
-  sprintf(msg + strlen(msg),"\n");
-  printf("%s",msg);
   fflush(stdout);
   my_turn_complete();
 #endif
@@ -303,17 +374,22 @@ static KEY_TYPE * make_input(void)
  * Computes the size of each bucket by iterating all keys and incrementing
  * their corresponding bucket's size
  */
-static inline int * count_local_bucket_sizes(KEY_TYPE const * restrict const my_keys)
+static inline int ** count_local_bucket_sizes(KEY_TYPE const ** restrict const my_keys)
 {
-  int * restrict const local_bucket_sizes = malloc(NUM_BUCKETS * sizeof(int));
+  int ** restrict const local_bucket_sizes = (int**) shmem_malloc(WORKERS_PER_PE * sizeof(int*));
+  for(int wid=0; wid<WORKERS_PER_PE; wid++) {
+    local_bucket_sizes[wid] = (int*) shmem_malloc(NUM_BUCKETS * sizeof(int));
+  }
 
   timer_start(&timers[TIMER_BCOUNT]);
 
-  init_array(local_bucket_sizes, NUM_BUCKETS);
-
-  for(uint64_t i = 0; i < NUM_KEYS_PER_PE; ++i){
-    const uint32_t bucket_index = my_keys[i]/BUCKET_WIDTH;
-    local_bucket_sizes[bucket_index]++;
+  // parallel block
+  for(int wid=0; wid<WORKERS_PER_PE; wid++) {
+    init_array(local_bucket_sizes[wid] , NUM_BUCKETS); // doing memset 0x00
+    for(uint64_t i = 0; i < NUM_KEYS_PER_WORKERS; ++i){
+      const uint32_t bucket_index = my_keys[wid][i]/BUCKET_WIDTH;
+      local_bucket_sizes[wid][bucket_index]++;
+    }
   }
 
   timer_stop(&timers[TIMER_BCOUNT]);
@@ -322,13 +398,17 @@ static inline int * count_local_bucket_sizes(KEY_TYPE const * restrict const my_
   wait_my_turn();
   char msg[1024];
   const int my_rank = shmem_my_pe();
-  sprintf(msg,"Rank %d: local bucket sizes: ", my_rank);
-  for(uint64_t i = 0; i < NUM_BUCKETS; ++i){
-    if(i < PRINT_MAX)
-    sprintf(msg + strlen(msg),"%d ", local_bucket_sizes[i]);
+  for(int wid=0; wid<WORKERS_PER_PE; wid++) {
+    const int v_rank = GET_VIRTUAL_RANK(my_rank, wid);
+    sprintf(msg,"V_Rank %d: local bucket sizes: ", v_rank);
+    for(uint64_t i = 0; i < NUM_BUCKETS; ++i){
+      if(i < PRINT_MAX)
+      sprintf(msg + strlen(msg),"%d ", local_bucket_sizes[wid][i]);
+    }  
+    sprintf(msg + strlen(msg),"\n");
+    printf("%s",msg);   
   }
-  sprintf(msg + strlen(msg),"\n");
-  printf("%s",msg);
+
   fflush(stdout);
   my_turn_complete();
 #endif
@@ -343,36 +423,46 @@ static inline int * count_local_bucket_sizes(KEY_TYPE const * restrict const my_
  * Stores a copy of the bucket offsets for use in exchanging keys because the
  * original bucket_offsets array is modified in the bucketize function
  */
-static inline int * compute_local_bucket_offsets(int const * restrict const local_bucket_sizes,
-                                                 int ** restrict send_offsets)
+static inline int ** compute_local_bucket_offsets(int const ** restrict const local_bucket_sizes,
+                                                 int *** restrict send_offsets)
 {
-  int * restrict const local_bucket_offsets = malloc(NUM_BUCKETS * sizeof(int));
+  int ** restrict const local_bucket_offsets = (int**) shmem_malloc(WORKERS_PER_PE * sizeof(int*));
+  (*send_offsets) = (int**) shmem_malloc(WORKERS_PER_PE * sizeof(int*));
+  for(int wid=0; wid<WORKERS_PER_PE; wid++) {
+    local_bucket_offsets[wid] = (int*) shmem_malloc(NUM_BUCKETS * sizeof(int));
+    (*send_offsets)[wid] = (int*) shmem_malloc(NUM_BUCKETS * sizeof(int));
+  }
 
   timer_start(&timers[TIMER_BOFFSET]);
 
-  (*send_offsets) = malloc(NUM_BUCKETS * sizeof(int));
-
-  local_bucket_offsets[0] = 0;
-  (*send_offsets)[0] = 0;
-  int temp = 0;
-  for(uint64_t i = 1; i < NUM_BUCKETS; i++){
-    temp = local_bucket_offsets[i-1] + local_bucket_sizes[i-1];
-    local_bucket_offsets[i] = temp; 
-    (*send_offsets)[i] = temp;
+  // parallel block
+  for(int wid=0; wid<WORKERS_PER_PE; wid++) {
+    local_bucket_offsets[wid][0] = 0;
+    (*send_offsets)[wid][0] = 0;
+    int temp = 0;
+    for(uint64_t i = 1; i < NUM_BUCKETS; i++){
+      temp = local_bucket_offsets[wid][i-1] + local_bucket_sizes[wid][i-1];
+      local_bucket_offsets[wid][i] = temp;
+      (*send_offsets)[wid][i] = temp;
+    } 
   }
+
   timer_stop(&timers[TIMER_BOFFSET]);
 
 #ifdef DEBUG
   wait_my_turn();
   char msg[1024];
   const int my_rank = shmem_my_pe();
-  sprintf(msg,"Rank %d: local bucket offsets: ", my_rank);
-  for(uint64_t i = 0; i < NUM_BUCKETS; ++i){
-    if(i < PRINT_MAX)
-    sprintf(msg + strlen(msg),"%d ", local_bucket_offsets[i]);
+  for(int wid=0; wid<WORKERS_PER_PE; wid++) {
+    const int v_rank = GET_VIRTUAL_RANK(my_rank, wid);
+    sprintf(msg,"V_Rank %d: local bucket offsets: ", v_rank);
+    for(uint64_t i = 0; i < NUM_BUCKETS; ++i){
+      if(i < PRINT_MAX)
+        sprintf(msg + strlen(msg),"%d ", local_bucket_offsets[wid][i]);
+    }
+    sprintf(msg + strlen(msg),"\n");
+    printf("%s",msg);
   }
-  sprintf(msg + strlen(msg),"\n");
-  printf("%s",msg);
   fflush(stdout);
   my_turn_complete();
 #endif
@@ -383,21 +473,27 @@ static inline int * compute_local_bucket_offsets(int const * restrict const loca
  * Places local keys into their corresponding local bucket.
  * The contents of each bucket are not sorted.
  */
-static inline KEY_TYPE * bucketize_local_keys(KEY_TYPE const * restrict const my_keys,
-                                              int * restrict const local_bucket_offsets)
+static inline KEY_TYPE ** bucketize_local_keys(KEY_TYPE const ** restrict const my_keys,
+                                              int ** restrict const local_bucket_offsets)
 {
-  KEY_TYPE * restrict const my_local_bucketed_keys = malloc(NUM_KEYS_PER_PE * sizeof(KEY_TYPE));
+  KEY_TYPE ** restrict const my_local_bucketed_keys = (KEY_TYPE**) shmem_malloc(WORKERS_PER_PE * sizeof(KEY_TYPE*));
+  for(int wid=0; wid<WORKERS_PER_PE; wid++) {
+    my_local_bucketed_keys[wid] = (KEY_TYPE*) shmem_malloc(NUM_KEYS_PER_WORKERS * sizeof(KEY_TYPE));
+  }
 
   timer_start(&timers[TIMER_BUCKETIZE]);
 
-  for(uint64_t i = 0; i < NUM_KEYS_PER_PE; ++i){
-    const KEY_TYPE key = my_keys[i];
-    const uint32_t bucket_index = key / BUCKET_WIDTH;
-    uint32_t index;
-    assert(local_bucket_offsets[bucket_index] >= 0);
-    index = local_bucket_offsets[bucket_index]++;
-    assert(index < NUM_KEYS_PER_PE);
-    my_local_bucketed_keys[index] = key;
+  // parallel block
+  for(int wid=0; wid<WORKERS_PER_PE; wid++) {
+    for(uint64_t i = 0; i < NUM_KEYS_PER_WORKERS; ++i){
+      const KEY_TYPE key = my_keys[wid][i];
+      const uint32_t bucket_index = key / BUCKET_WIDTH; 
+      uint32_t index;
+      assert(local_bucket_offsets[wid][bucket_index] >= 0);
+      index = local_bucket_offsets[wid][bucket_index]++;
+      assert(index < NUM_KEYS_PER_WORKERS);
+      my_local_bucketed_keys[wid][index] = key;
+    }
   }
 
   timer_stop(&timers[TIMER_BUCKETIZE]);
@@ -406,13 +502,16 @@ static inline KEY_TYPE * bucketize_local_keys(KEY_TYPE const * restrict const my
   wait_my_turn();
   char msg[1024];
   const int my_rank = shmem_my_pe();
-  sprintf(msg,"Rank %d: local bucketed keys: ", my_rank);
-  for(uint64_t i = 0; i < NUM_KEYS_PER_PE; ++i){
-    if(i < PRINT_MAX)
-    sprintf(msg + strlen(msg),"%d ", my_local_bucketed_keys[i]);
+  for(int wid=0; wid<WORKERS_PER_PE; wid++) {
+    const int v_rank = GET_VIRTUAL_RANK(my_rank, wid);
+    sprintf(msg,"V_Rank %d: local bucketed keys: ", v_rank);
+    for(uint64_t i = 0; i < NUM_KEYS_PER_WORKERS; ++i){
+      if(i < PRINT_MAX)
+      sprintf(msg + strlen(msg),"%d ", my_local_bucketed_keys[wid][i]);
+    }
+    sprintf(msg + strlen(msg),"\n");
+    printf("%s",msg);
   }
-  sprintf(msg + strlen(msg),"\n");
-  printf("%s",msg);
   fflush(stdout);
   my_turn_complete();
 #endif
@@ -423,52 +522,46 @@ static inline KEY_TYPE * bucketize_local_keys(KEY_TYPE const * restrict const my
 /*
  * Each PE sends the contents of its local buckets to the PE that owns that bucket.
  */
-static inline KEY_TYPE * exchange_keys(int const * restrict const send_offsets,
-                                       int const * restrict const local_bucket_sizes,
-                                       KEY_TYPE const * restrict const my_local_bucketed_keys)
+static inline KEY_TYPE ** exchange_keys(int const ** restrict const send_offsets,
+                                       int const ** restrict const local_bucket_sizes,
+                                       KEY_TYPE const ** restrict const my_local_bucketed_keys)
 {
   timer_start(&timers[TIMER_ATA_KEYS]);
 
   const int my_rank = shmem_my_pe();
-  unsigned int total_keys_sent = 0;
+  unsigned int total_keys_sent[WORKERS_PER_PE];
+  memset(total_keys_sent, 0x00, WORKERS_PER_PE*sizeof(int));
 
-  // Keys destined for local key buffer can be written with memcpy
-  const long long int write_offset_into_self = shmem_longlong_fadd(&receive_offset, (long long int)local_bucket_sizes[my_rank], my_rank);
-  memcpy(&my_bucket_keys[write_offset_into_self], 
-         &my_local_bucketed_keys[send_offsets[my_rank]], 
-         local_bucket_sizes[my_rank]*sizeof(KEY_TYPE));
-
-
-  for(uint64_t i = 0; i < NUM_PES; ++i){
-
+  for(int wid=0; wid<WORKERS_PER_PE; wid++) {
+  const int v_my_rank = GET_VIRTUAL_RANK(my_rank, wid);
+  for(uint64_t i = 0; i < NUM_PES*WORKERS_PER_PE; ++i){
 #ifdef PERMUTE
     const int target_pe = permute_array[i];
+    assert("Not implemented for WORKERS_PER_PE" && 0);
 #elif INCAST
     const int target_pe = i;
+    assert("Not implemented for WORKERS_PER_PE" && 0);
 #else
-    const int target_pe = (my_rank + i) % NUM_PES;
+    const int v_target_pe = (v_my_rank + i) % (NUM_PES*WORKERS_PER_PE);
 #endif
-
-    // Local keys already written with memcpy
-    if(target_pe == my_rank){ continue; }
-
-    const int read_offset_from_self = send_offsets[target_pe];
-    const int my_send_size = local_bucket_sizes[target_pe];
-
-    const long long int write_offset_into_target = shmem_longlong_fadd(&receive_offset, (long long int)my_send_size, target_pe);
-
+    const int r_target_pe = GET_REAL_RANK(v_target_pe);
+    const int read_offset_from_self = send_offsets[wid][v_target_pe];
+    const int my_send_size = local_bucket_sizes[wid][v_target_pe];
+    const int min_v_rank_target_pe = GET_VIRTUAL_RANK(r_target_pe, 0);
+    const int wid_r_target_pe = v_target_pe - min_v_rank_target_pe;
+    const long long int write_offset_into_target = shmem_longlong_fadd(&receive_offset[wid_r_target_pe], (long long int)my_send_size, r_target_pe);
 #ifdef DEBUG
-    printf("Rank: %d Target: %d Offset into target: %lld Offset into myself: %d Send Size: %d\n",
-        my_rank, target_pe, write_offset_into_target, read_offset_from_self, my_send_size);
+    printf("V_Rank: %d Target: %d Offset into target: %lld Offset into myself: %d Send Size: %d\n",
+        v_my_rank, v_target_pe, write_offset_into_target, read_offset_from_self, my_send_size);
 #endif
 
-    shmem_int_put(&(my_bucket_keys[write_offset_into_target]), 
-                  &(my_local_bucketed_keys[read_offset_from_self]), 
-                  my_send_size, 
-                  target_pe);
+    shmem_int_put(&(my_bucket_keys[wid_r_target_pe][write_offset_into_target]),
+                  &(my_local_bucketed_keys[wid][read_offset_from_self]),
+                  my_send_size,
+                  r_target_pe);
 
-    total_keys_sent += my_send_size;
-  }
+    total_keys_sent[wid] += my_send_size;
+  } }
 
 #ifdef BARRIER_ATA
   shmem_barrier_all();
@@ -479,38 +572,22 @@ static inline KEY_TYPE * exchange_keys(int const * restrict const send_offsets,
 
 #ifdef DEBUG
   wait_my_turn();
-  char msg[1024];
-  sprintf(msg,"Rank %d: Bucket Size %lld | Total Keys Sent: %u | Keys after exchange:", 
-                        my_rank, receive_offset, total_keys_sent);
-  for(long long int i = 0; i < receive_offset; ++i){
-    if(i < PRINT_MAX)
-    sprintf(msg + strlen(msg),"%d ", my_bucket_keys[i]);
+  for(int wid = 0; wid<WORKERS_PER_PE; wid++) {
+    const int v_rank = GET_VIRTUAL_RANK(my_rank, wid);
+    char msg[1024];
+    sprintf(msg,"V_Rank %d: Bucket Size %lld | Total Keys Sent: %u | Keys after exchange:",
+                            v_rank, receive_offset[wid], total_keys_sent[wid]);
+    for(long long int i = 0; i < receive_offset[wid]; ++i){
+      if(i < PRINT_MAX)
+      sprintf(msg + strlen(msg),"%d ", my_bucket_keys[wid][i]);
+    }
+    sprintf(msg + strlen(msg),"\n");
+    printf("%s",msg);
   }
-  sprintf(msg + strlen(msg),"\n");
-  printf("%s",msg);
   fflush(stdout);
   my_turn_complete();
 #endif
-
   return my_bucket_keys;
-}
-
-typedef struct parfor_args_t {
-  KEY_TYPE const * restrict const my_bucket_keys;
-  int my_min_key;
-  counter_worker_t* restrict const my_local_key_counts;
-} parfor_args_t;
-
-void parfor_async(void * argv,int idx) {
-  parfor_args_t* arg = (parfor_args_t*) argv;
-  KEY_TYPE const * restrict const my_bucket_keys = arg->my_bucket_keys;
-  int my_min_key = arg->my_min_key;
-  counter_worker_t* restrict const my_local_key_counts = arg->my_local_key_counts;
-
-  const unsigned int key_index = my_bucket_keys[idx] - my_min_key;
-  assert(my_bucket_keys[idx] >= my_min_key);
-  assert(key_index < BUCKET_WIDTH);
-  INCREMENT(my_local_key_counts, key_index); 
 }
 
 /*
@@ -519,43 +596,45 @@ void parfor_async(void * argv,int idx) {
  * minimum key value to allow indexing from 0.
  * my_bucket_keys: All keys in my bucket unsorted [my_rank * BUCKET_WIDTH, (my_rank+1)*BUCKET_WIDTH)
  */
-static inline counter_worker_t * count_local_keys(KEY_TYPE const * restrict const my_bucket_keys)
+static inline int ** count_local_keys()
 {
-  counter_worker_t* restrict const my_local_key_counts = malloc(BUCKET_WIDTH * sizeof(counter_worker_t));
-  memset(my_local_key_counts, 0x00, BUCKET_WIDTH * sizeof(counter_worker_t));
+  int ** restrict const my_local_key_counts = (int**) malloc(WORKERS_PER_PE * sizeof(int*));
+  for(int wid=0; wid<WORKERS_PER_PE; wid++) {
+    my_local_key_counts[wid] = (int*) malloc(BUCKET_WIDTH*sizeof(int));
+    memset(my_local_key_counts[wid], 0x00, BUCKET_WIDTH * sizeof(int));
+  }
 
   timer_start(&timers[TIMER_SORT]);
 
   const int my_rank = shmem_my_pe();
-  const int my_min_key = my_rank * BUCKET_WIDTH;
-
-  parfor_args_t parfor_args = {my_bucket_keys, my_min_key, my_local_key_counts};
-  //TODO: Currently hclib expects the bounds as 'int' but it may overflow in this particular case. Check in case of error.
-  int lowBound = 0;
-  int highBound = my_bucket_size;
-  int stride = 1;
-  int tile_size = 1;
-  int loop_dimension = 1;
-  shmem_task_scope_begin();
-  shmem_parallel_for_nbi(parfor_async, &parfor_args, NULL, lowBound, highBound, stride, tile_size, loop_dimension, SHMEM_PARALLEL_FOR_RECURSIVE_MODE);
-  shmem_task_scope_end();
-
-  for(uint64_t i = 0; i < BUCKET_WIDTH; ++i){
-    AGGREGATE(my_local_key_counts, i);
+  // parallel block
+  for(int wid=0; wid<WORKERS_PER_PE; wid++) {
+    const int v_rank = GET_VIRTUAL_RANK(my_rank, wid);
+    const int my_min_key = v_rank * BUCKET_WIDTH;
+    // Count the occurences of each key in my bucket
+    for(long long int i = 0; i < my_bucket_size[wid]; ++i) {
+      const unsigned int key_index = my_bucket_keys[wid][i] - my_min_key;
+      assert(my_bucket_keys[wid][i] >= my_min_key);
+      assert(key_index < BUCKET_WIDTH);
+      my_local_key_counts[wid][key_index]++;
+    }   
   }
 
   timer_stop(&timers[TIMER_SORT]);
 
 #ifdef DEBUG
   wait_my_turn();
-  char msg[4096];
-  sprintf(msg,"Rank %d: Bucket Size %lld | Local Key Counts:", my_rank, my_bucket_size);
-  for(uint64_t i = 0; i < BUCKET_WIDTH; ++i){
-    if(i < PRINT_MAX)
-    sprintf(msg + strlen(msg),"%d ", GET_INDEX(my_local_key_counts, i));
+  for(int wid=0; wid<WORKERS_PER_PE; wid++) {
+    char msg[4096];
+    const int v_rank = GET_VIRTUAL_RANK(my_rank, wid);
+    sprintf(msg,"V_Rank %d: Bucket Size %lld | Local Key Counts:", v_rank, my_bucket_size[wid]);
+    for(uint64_t i = 0; i < BUCKET_WIDTH; ++i){
+      if(i < PRINT_MAX)
+      sprintf(msg + strlen(msg),"%d ", my_local_key_counts[wid][i]);
+    }
+    sprintf(msg + strlen(msg),"\n");
+    printf("%s",msg);
   }
-  sprintf(msg + strlen(msg),"\n");
-  printf("%s",msg);
   fflush(stdout);
   my_turn_complete();
 #endif
@@ -568,54 +647,64 @@ static inline counter_worker_t * count_local_keys(KEY_TYPE const * restrict cons
  * Ensures all keys are within a PE's bucket boundaries.
  * Ensures the final number of keys is equal to the initial.
  */
-static int verify_results(counter_worker_t const * restrict const my_local_key_counts,
-                           KEY_TYPE const * restrict const my_local_keys)
+static int verify_results(int const ** restrict const my_local_key_counts)
 {
 
   shmem_barrier_all();
 
-  int error = 0;
+  int error[WORKERS_PER_PE];
+  memset(error, 0x00, sizeof(int) * WORKERS_PER_PE);
 
   const int my_rank = shmem_my_pe();
 
-  const int my_min_key = my_rank * BUCKET_WIDTH;
-  const int my_max_key = (my_rank+1) * BUCKET_WIDTH - 1;
-
-  // Verify all keys are within bucket boundaries
-  for(long long int i = 0; i < my_bucket_size; ++i){
-    const int key = my_local_keys[i];
-    if((key < my_min_key) || (key > my_max_key)){
-      printf("Rank %d Failed Verification!\n",my_rank);
-      printf("Key: %d is outside of bounds [%d, %d]\n", key, my_min_key, my_max_key);
-      error = 1;
+  // parallel block
+  for(int wid=0; wid<WORKERS_PER_PE; wid++) {
+    const int v_rank = GET_VIRTUAL_RANK(my_rank, wid);
+    const int my_min_key = v_rank * BUCKET_WIDTH;
+    const int my_max_key = (v_rank+1) * BUCKET_WIDTH - 1;
+    // Verify all keys are within bucket boundaries
+    for(long long int i = 0; i < my_bucket_size[wid]; ++i){
+      const int key = my_bucket_keys[wid][i];
+      if((key < my_min_key) || (key > my_max_key)){
+        printf("Rank %d Failed Verification!\n",v_rank);
+        printf("Key: %d is outside of bounds [%d, %d]\n", key, my_min_key, my_max_key);
+        error[wid] = 1;
+      }
+    }
+    // Verify the sum of the key population equals the expected bucket size
+    long long int bucket_size_test = 0;
+    for(uint64_t i = 0; i < BUCKET_WIDTH; ++i){
+      bucket_size_test +=  my_local_key_counts[wid][i];
+    }
+    if(bucket_size_test != my_bucket_size[wid]){
+      printf("Rank %d Failed Verification!\n",v_rank);
+      printf("Actual Bucket Size: %lld Should be %lld\n", bucket_size_test, my_bucket_size[wid]);
+      error[wid] = 1;
     }
   }
 
-  // Verify the sum of the key population equals the expected bucket size
-  long long int bucket_size_test = 0;
-  for(uint64_t i = 0; i < BUCKET_WIDTH; ++i){
-    bucket_size_test +=  GET_INDEX(my_local_key_counts, i);
-  }
-  if(bucket_size_test != my_bucket_size){
-      printf("Rank %d Failed Verification!\n",my_rank);
-      printf("Actual Bucket Size: %lld Should be %lld\n", bucket_size_test, my_bucket_size);
-      error = 1;
+  // NOT Parallel
+  static long long int total_my_bucket_size = 0;
+  int tError=0;
+  for(int wid=0; wid<WORKERS_PER_PE; wid++) {
+    total_my_bucket_size += my_bucket_size[wid];
+    tError += error[wid];
   }
 
   // Verify the final number of keys equals the initial number of keys
   static long long int total_num_keys = 0;
-  shmem_longlong_sum_to_all(&total_num_keys, &my_bucket_size, 1, 0, 0, NUM_PES, llWrk, pSync);
+  shmem_longlong_sum_to_all(&total_num_keys, &total_my_bucket_size, 1, 0, 0, NUM_PES, llWrk, pSync);
   shmem_barrier_all();
 
-  if(total_num_keys != (long long int)(NUM_KEYS_PER_PE * NUM_PES)){
+  if(total_num_keys != (long long int)(NUM_KEYS_PER_WORKERS * NUM_PES * WORKERS_PER_PE)){
     if(my_rank == ROOT_PE){
       printf("Verification Failed!\n");
       printf("Actual total number of keys: %lld Expected %" PRIu64 "\n", total_num_keys, NUM_KEYS_PER_PE * NUM_PES );
-      error = 1;
+      tError = 1;
     }
   }
 
-  return error;
+  return tError;
 }
 
 /*
@@ -842,6 +931,18 @@ static unsigned int * gather_rank_counts(_timer_t * const timer)
   }
 
 }
+/*
+ * Seeds each rank based on the worker number, rank and time
+ */
+static inline pcg32_random_t seed_my_worker(int wid)
+{
+  const unsigned int my_rank = shmem_my_pe();
+  const unsigned int my_virtual_rank = GET_VIRTUAL_RANK(my_rank, wid);
+  pcg32_random_t rng;
+  pcg32_srandom_r(&rng, (uint64_t) my_virtual_rank, (uint64_t) my_virtual_rank );
+  return rng;
+}
+
 /*
  * Seeds each rank based on the rank number and time
  */
