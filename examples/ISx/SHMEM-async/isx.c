@@ -77,7 +77,8 @@ uint64_t NUM_KEYS_PER_WORKERS;
 int actual_num_workers;
 #define GET_VIRTUAL_RANK(rank, wid) ((rank * WORKERS_PER_PE) + (wid))
 #define GET_REAL_RANK(vrank) ((int)(vrank / WORKERS_PER_PE))
-#define PARALLEL_FOR_MODE SHMEM_PARALLEL_FOR_FLAT_MODE
+#define PARALLEL_FOR_MODE SHMEM_PARALLEL_FOR_RECURSIVE_MODE
+//#define PARALLEL_FOR_MODE SHMEM_PARALLEL_FOR_FLAT_MODE
 // This is done due to current limitation that entrypoint function
 // cannot accept arguments. This will be resolved in future version of 
 // AsyncSHMEM

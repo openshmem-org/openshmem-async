@@ -17,9 +17,9 @@ WEAKISO = 3
 SRCS := $(wildcard *.c)
 OBJDIR := obj
 BINDIR := bin
-STRONG_EXE = isx.strong
-WEAK_EXE = isx.weak 
-WEAKISO_EXE = isx.weak_iso
+STRONG_EXE = isx.strong.ashmem
+WEAK_EXE = isx.weak.ashmem 
+WEAKISO_EXE = isx.weak_iso.ashmem
 STRONG_OBJS := $(SRCS:.c=.o_s)
 STRONG_OBJS := $(addprefix $(OBJDIR)/,$(STRONG_OBJS))
 WEAK_OBJS := $(SRCS:.c=.o_w)
