@@ -77,6 +77,7 @@ uint64_t NUM_KEYS_PER_WORKERS;
 int actual_num_workers;
 #define GET_VIRTUAL_RANK(rank, wid) ((rank * WORKERS_PER_PE) + (wid))
 #define GET_REAL_RANK(vrank) ((int)(vrank / WORKERS_PER_PE))
+#define PARALLEL_FOR_MODE SHMEM_PARALLEL_FOR_FLAT_MODE
 // This is done due to current limitation that entrypoint function
 // cannot accept arguments. This will be resolved in future version of 
 // AsyncSHMEM
@@ -363,7 +364,7 @@ static KEY_TYPE ** make_input(void)
   int tile_size = 1;
   int loop_dimension = 1;
   shmem_task_scope_begin();
-  shmem_parallel_for_nbi(make_input_async, (void*)(&my_keys), NULL, lowBound, highBound, stride, tile_size, loop_dimension, SHMEM_PARALLEL_FOR_RECURSIVE_MODE);
+  shmem_parallel_for_nbi(make_input_async, (void*)(&my_keys), NULL, lowBound, highBound, stride, tile_size, loop_dimension, PARALLEL_FOR_MODE);
   shmem_task_scope_end();
 #else
 #if defined(_OPENMP)
@@ -442,7 +443,7 @@ static inline int ** count_local_bucket_sizes(KEY_TYPE const ** restrict const m
   int tile_size = 1;
   int loop_dimension = 1;
   shmem_task_scope_begin();
-  shmem_parallel_for_nbi(count_local_bucket_sizes_async, (void*)(&args), NULL, lowBound, highBound, stride, tile_size, loop_dimension, SHMEM_PARALLEL_FOR_RECURSIVE_MODE);
+  shmem_parallel_for_nbi(count_local_bucket_sizes_async, (void*)(&args), NULL, lowBound, highBound, stride, tile_size, loop_dimension, PARALLEL_FOR_MODE);
   shmem_task_scope_end();
 #else
 #if defined(_OPENMP)
@@ -533,7 +534,7 @@ static inline int ** compute_local_bucket_offsets(int const ** restrict const lo
   int tile_size = 1;
   int loop_dimension = 1;
   shmem_task_scope_begin();
-  shmem_parallel_for_nbi(compute_local_bucket_offsets_async, (void*)(&args), NULL, lowBound, highBound, stride, tile_size, loop_dimension, SHMEM_PARALLEL_FOR_RECURSIVE_MODE);
+  shmem_parallel_for_nbi(compute_local_bucket_offsets_async, (void*)(&args), NULL, lowBound, highBound, stride, tile_size, loop_dimension, PARALLEL_FOR_MODE);
   shmem_task_scope_end();
 #else
 #if defined(_OPENMP)
@@ -622,7 +623,7 @@ static inline KEY_TYPE ** bucketize_local_keys(KEY_TYPE const ** restrict const 
   int tile_size = 1;
   int loop_dimension = 1;
   shmem_task_scope_begin();
-  shmem_parallel_for_nbi(bucketize_local_keys_async, (void*)(&args), NULL, lowBound, highBound, stride, tile_size, loop_dimension, SHMEM_PARALLEL_FOR_RECURSIVE_MODE);
+  shmem_parallel_for_nbi(bucketize_local_keys_async, (void*)(&args), NULL, lowBound, highBound, stride, tile_size, loop_dimension, PARALLEL_FOR_MODE);
   shmem_task_scope_end();
 #else
 #if defined(_OPENMP)
@@ -778,7 +779,7 @@ static inline int ** count_local_keys()
   int tile_size = 1;
   int loop_dimension = 1;
   shmem_task_scope_begin();
-  shmem_parallel_for_nbi(count_local_keys_async, (void*)(&my_local_key_counts), NULL, lowBound, highBound, stride, tile_size, loop_dimension, SHMEM_PARALLEL_FOR_RECURSIVE_MODE);
+  shmem_parallel_for_nbi(count_local_keys_async, (void*)(&my_local_key_counts), NULL, lowBound, highBound, stride, tile_size, loop_dimension, PARALLEL_FOR_MODE);
   shmem_task_scope_end();
 #else
 #if defined(_OPENMP)
@@ -880,7 +881,7 @@ static int verify_results(int const ** restrict const my_local_key_counts)
   int tile_size = 1;
   int loop_dimension = 1;
   shmem_task_scope_begin();
-  shmem_parallel_for_nbi(verify_results_async, (void*)(&args), NULL, lowBound, highBound, stride, tile_size, loop_dimension, SHMEM_PARALLEL_FOR_RECURSIVE_MODE);
+  shmem_parallel_for_nbi(verify_results_async, (void*)(&args), NULL, lowBound, highBound, stride, tile_size, loop_dimension, PARALLEL_FOR_MODE);
   shmem_task_scope_end();
 #else
 #if defined(_OPENMP)
