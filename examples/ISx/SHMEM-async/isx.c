@@ -44,6 +44,10 @@ POSSIBILITY OF SUCH DAMAGE.
 #include "timer.h"
 #include "pcg_basic.h"
 
+#if defined(_OPENMP)
+#include <omp.h>
+#endif
+
 #define ROOT_PE 0
 
 // Needed for shmem collective operations
@@ -108,16 +112,7 @@ KEY_TYPE my_bucket_keys[WORKERS_PER_PE][KEY_BUFFER_SIZE];
 int * permute_array;
 #endif
 
-#ifndef HCLIB_COMM_WORKER_FIXED
 void entrypoint(void *arg) {
-#else
-int main (int argc, char *argv[]) {
-
-  shmem_init ();
-  m_argc = argc;
-  m_argv = argv;
-
-#endif
 
   char * log_file = parse_params(m_argc, m_argv);
 
@@ -128,7 +123,6 @@ int main (int argc, char *argv[]) {
   log_times(log_file);
 
   //return err;
-#ifndef HCLIB_COMM_WORKER_FIXED
 }
 
 int main (int argc, char ** argv) {
@@ -136,16 +130,15 @@ int main (int argc, char ** argv) {
   m_argc = argc;
   m_argv = argv;
 
+#if defined(_OPENMP)
+  entrypoint(NULL);
+#else
   shmem_workers_init(entrypoint, NULL);
+#endif
 
   shmem_finalize ();
   return 0;
 }
-
-#else // HCLIB_COMM_WORKER_FIXED
-  shmem_finalize();
-}
-#endif
 
 // Parses all of the command line input and definitions in params.h
 // to set all necessary runtime values and options
@@ -162,7 +155,13 @@ static char * parse_params(const int argc, char ** argv)
     exit(1);
   }
 
+#if defined(_OPENMP)
+  actual_num_workers = omp_get_num_threads();
+#elif defined(_SHMEM_WORKERS)
   actual_num_workers = shmem_n_workers();
+#else
+  actual_num_workers = 1;
+#endif
   NUM_PES = (uint64_t) shmem_n_pes();
   MAX_KEY_VAL = DEFAULT_MAX_KEY;
   NUM_BUCKETS = NUM_PES*WORKERS_PER_PE;
@@ -227,6 +226,13 @@ static char * parse_params(const int argc, char ** argv)
     printf("ISx v%1d.%1d\n",MAJOR_VERSION_NUMBER,MINOR_VERSION_NUMBER);
 #ifdef PERMUTE
     printf("Random Permute Used in ATA.\n");
+#endif
+#if defined(_OPENMP)
+    printf("  OpenMP Version, total workers: %d\n",actual_num_workers); 
+#elif defined(_SHMEM_WORKERS)
+    printf("  AsyncSHMEM Version, total workers: %d\n",actual_num_workers);
+#else
+    printf("  AsyncSHMEM Sequential version\n");
 #endif
     printf("  Number of Keys per PE: %" PRIu64 "\n", NUM_KEYS_PER_PE);
     printf("  Number of Keys per Workers: %" PRIu64 "\n", NUM_KEYS_PER_WORKERS);
@@ -339,6 +345,9 @@ static KEY_TYPE ** make_input(void)
     my_keys[wid] = (KEY_TYPE*) shmem_malloc(NUM_KEYS_PER_WORKERS * sizeof(KEY_TYPE));
   }
  
+#if defined(_OPENMP)
+#pragma omp parallel for private(wid) schedule (dynamic,1) 
+#endif
   // parallel block
   for(int wid=0; wid<WORKERS_PER_PE; wid++) {
     pcg32_random_t rng = seed_my_worker(wid);
@@ -384,6 +393,9 @@ static inline int ** count_local_bucket_sizes(KEY_TYPE const ** restrict const m
   timer_start(&timers[TIMER_BCOUNT]);
 
   // parallel block
+#if defined(_OPENMP)
+#pragma omp parallel for private(wid) schedule (dynamic,1) 
+#endif
   for(int wid=0; wid<WORKERS_PER_PE; wid++) {
     init_array(local_bucket_sizes[wid] , NUM_BUCKETS); // doing memset 0x00
     for(uint64_t i = 0; i < NUM_KEYS_PER_WORKERS; ++i){
@@ -436,6 +448,9 @@ static inline int ** compute_local_bucket_offsets(int const ** restrict const lo
   timer_start(&timers[TIMER_BOFFSET]);
 
   // parallel block
+#if defined(_OPENMP)
+#pragma omp parallel for private(wid) schedule (dynamic,1) 
+#endif
   for(int wid=0; wid<WORKERS_PER_PE; wid++) {
     local_bucket_offsets[wid][0] = 0;
     (*send_offsets)[wid][0] = 0;
@@ -484,6 +499,9 @@ static inline KEY_TYPE ** bucketize_local_keys(KEY_TYPE const ** restrict const 
   timer_start(&timers[TIMER_BUCKETIZE]);
 
   // parallel block
+#if defined(_OPENMP)
+#pragma omp parallel for private(wid) schedule (dynamic,1) 
+#endif
   for(int wid=0; wid<WORKERS_PER_PE; wid++) {
     for(uint64_t i = 0; i < NUM_KEYS_PER_WORKERS; ++i){
       const KEY_TYPE key = my_keys[wid][i];
@@ -608,6 +626,9 @@ static inline int ** count_local_keys()
 
   const int my_rank = shmem_my_pe();
   // parallel block
+#if defined(_OPENMP)
+#pragma omp parallel for private(wid) schedule (dynamic,1) 
+#endif
   for(int wid=0; wid<WORKERS_PER_PE; wid++) {
     const int v_rank = GET_VIRTUAL_RANK(my_rank, wid);
     const int my_min_key = v_rank * BUCKET_WIDTH;
@@ -658,6 +679,9 @@ static int verify_results(int const ** restrict const my_local_key_counts)
   const int my_rank = shmem_my_pe();
 
   // parallel block
+#if defined(_OPENMP)
+#pragma omp parallel for private(wid) schedule (dynamic,1) 
+#endif
   for(int wid=0; wid<WORKERS_PER_PE; wid++) {
     const int v_rank = GET_VIRTUAL_RANK(my_rank, wid);
     const int my_min_key = v_rank * BUCKET_WIDTH;
