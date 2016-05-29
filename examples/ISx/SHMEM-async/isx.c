@@ -75,7 +75,6 @@ char* log_file;
 #define WORKERS_PER_PE 16 // == Total number of cores/node on Titan
 uint64_t NUM_KEYS_PER_WORKERS;
 int actual_num_workers;
-#define WORKERS_PER_PE 2
 #define GET_VIRTUAL_RANK(rank, wid) ((rank * WORKERS_PER_PE) + (wid))
 #define GET_REAL_RANK(vrank) ((int)(vrank / WORKERS_PER_PE))
 // This is done due to current limitation that entrypoint function
@@ -156,6 +155,7 @@ static char * parse_params(const int argc, char ** argv)
   }
 
 #if defined(_OPENMP)
+#pragma omp parallel
   actual_num_workers = omp_get_num_threads();
 #elif defined(_SHMEM_WORKERS)
   actual_num_workers = shmem_n_workers();
@@ -345,11 +345,12 @@ static KEY_TYPE ** make_input(void)
     my_keys[wid] = (KEY_TYPE*) shmem_malloc(NUM_KEYS_PER_WORKERS * sizeof(KEY_TYPE));
   }
  
+  int wid; 
 #if defined(_OPENMP)
 #pragma omp parallel for private(wid) schedule (dynamic,1) 
 #endif
   // parallel block
-  for(int wid=0; wid<WORKERS_PER_PE; wid++) {
+  for(wid=0; wid<WORKERS_PER_PE; wid++) {
     pcg32_random_t rng = seed_my_worker(wid);
     for(uint64_t i = 0; i < NUM_KEYS_PER_WORKERS; ++i) {
       my_keys[wid][i] = pcg32_boundedrand_r(&rng, MAX_KEY_VAL);
@@ -392,11 +393,12 @@ static inline int ** count_local_bucket_sizes(KEY_TYPE const ** restrict const m
 
   timer_start(&timers[TIMER_BCOUNT]);
 
+  int wid;
   // parallel block
 #if defined(_OPENMP)
 #pragma omp parallel for private(wid) schedule (dynamic,1) 
 #endif
-  for(int wid=0; wid<WORKERS_PER_PE; wid++) {
+  for(wid=0; wid<WORKERS_PER_PE; wid++) {
     init_array(local_bucket_sizes[wid] , NUM_BUCKETS); // doing memset 0x00
     for(uint64_t i = 0; i < NUM_KEYS_PER_WORKERS; ++i){
       const uint32_t bucket_index = my_keys[wid][i]/BUCKET_WIDTH;
@@ -447,11 +449,12 @@ static inline int ** compute_local_bucket_offsets(int const ** restrict const lo
 
   timer_start(&timers[TIMER_BOFFSET]);
 
+  int wid;
   // parallel block
 #if defined(_OPENMP)
 #pragma omp parallel for private(wid) schedule (dynamic,1) 
 #endif
-  for(int wid=0; wid<WORKERS_PER_PE; wid++) {
+  for(wid=0; wid<WORKERS_PER_PE; wid++) {
     local_bucket_offsets[wid][0] = 0;
     (*send_offsets)[wid][0] = 0;
     int temp = 0;
@@ -498,11 +501,12 @@ static inline KEY_TYPE ** bucketize_local_keys(KEY_TYPE const ** restrict const 
 
   timer_start(&timers[TIMER_BUCKETIZE]);
 
+  int wid;
   // parallel block
 #if defined(_OPENMP)
 #pragma omp parallel for private(wid) schedule (dynamic,1) 
 #endif
-  for(int wid=0; wid<WORKERS_PER_PE; wid++) {
+  for(wid=0; wid<WORKERS_PER_PE; wid++) {
     for(uint64_t i = 0; i < NUM_KEYS_PER_WORKERS; ++i){
       const KEY_TYPE key = my_keys[wid][i];
       const uint32_t bucket_index = key / BUCKET_WIDTH; 
@@ -625,11 +629,12 @@ static inline int ** count_local_keys()
   timer_start(&timers[TIMER_SORT]);
 
   const int my_rank = shmem_my_pe();
+  int wid;
   // parallel block
 #if defined(_OPENMP)
 #pragma omp parallel for private(wid) schedule (dynamic,1) 
 #endif
-  for(int wid=0; wid<WORKERS_PER_PE; wid++) {
+  for(wid=0; wid<WORKERS_PER_PE; wid++) {
     const int v_rank = GET_VIRTUAL_RANK(my_rank, wid);
     const int my_min_key = v_rank * BUCKET_WIDTH;
     // Count the occurences of each key in my bucket
@@ -678,11 +683,12 @@ static int verify_results(int const ** restrict const my_local_key_counts)
 
   const int my_rank = shmem_my_pe();
 
+  int wid;
   // parallel block
 #if defined(_OPENMP)
 #pragma omp parallel for private(wid) schedule (dynamic,1) 
 #endif
-  for(int wid=0; wid<WORKERS_PER_PE; wid++) {
+  for(wid=0; wid<WORKERS_PER_PE; wid++) {
     const int v_rank = GET_VIRTUAL_RANK(my_rank, wid);
     const int my_min_key = v_rank * BUCKET_WIDTH;
     const int my_max_key = (v_rank+1) * BUCKET_WIDTH - 1;
