@@ -331,6 +331,16 @@ static int bucket_sort(void)
   return err;
 }
 
+#if defined(_SHMEM_WORKERS)
+void make_input_async(void *args, int wid) {
+  KEY_TYPE ** restrict my_keys = *((KEY_TYPE *** restrict) args);
+
+  pcg32_random_t rng = seed_my_worker(wid);
+  for(uint64_t i = 0; i < NUM_KEYS_PER_WORKERS; ++i) {
+    my_keys[wid][i] = pcg32_boundedrand_r(&rng, MAX_KEY_VAL);
+  }
+}
+#endif
 
 /*
  * Generates uniformly random keys [0, MAX_KEY_VAL] on each rank using the time and rank
@@ -346,6 +356,16 @@ static KEY_TYPE ** make_input(void)
   }
  
   int wid; 
+#if defined(_SHMEM_WORKERS)
+  int lowBound = 0;
+  int highBound = WORKERS_PER_PE;
+  int stride = 1;
+  int tile_size = 1;
+  int loop_dimension = 1;
+  shmem_task_scope_begin();
+  shmem_parallel_for_nbi(make_input_async, (void*)(&my_keys), NULL, lowBound, highBound, stride, tile_size, loop_dimension, SHMEM_PARALLEL_FOR_RECURSIVE_MODE);
+  shmem_task_scope_end();
+#else
 #if defined(_OPENMP)
 #pragma omp parallel for private(wid) schedule (dynamic,1) 
 #endif
@@ -356,6 +376,7 @@ static KEY_TYPE ** make_input(void)
       my_keys[wid][i] = pcg32_boundedrand_r(&rng, MAX_KEY_VAL);
     }
   }
+#endif
 
   timer_stop(&timers[TIMER_INPUT]);
 
@@ -379,6 +400,24 @@ static KEY_TYPE ** make_input(void)
   return my_keys;
 }
 
+#if defined(_SHMEM_WORKERS)
+typedef struct count_local_bucket_sizes_t {
+  int *** restrict local_bucket_sizes;
+  KEY_TYPE ** const restrict const my_keys;
+} count_local_bucket_sizes_t;
+
+void count_local_bucket_sizes_async(void* arg, int wid) {
+  count_local_bucket_sizes_t* args = (count_local_bucket_sizes_t*) arg;
+  int ** restrict local_bucket_sizes = (*(args->local_bucket_sizes));
+  KEY_TYPE ** const restrict const my_keys = args->my_keys;
+
+  init_array(local_bucket_sizes[wid] , NUM_BUCKETS); // doing memset 0x00
+  for(uint64_t i = 0; i < NUM_KEYS_PER_WORKERS; ++i){
+    const uint32_t bucket_index = my_keys[wid][i]/BUCKET_WIDTH;
+    local_bucket_sizes[wid][bucket_index]++;
+  }
+}
+#endif
 
 /*
  * Computes the size of each bucket by iterating all keys and incrementing
@@ -395,6 +434,17 @@ static inline int ** count_local_bucket_sizes(KEY_TYPE const ** restrict const m
 
   int wid;
   // parallel block
+#if defined(_SHMEM_WORKERS)
+  count_local_bucket_sizes_t args = { &local_bucket_sizes, my_keys };
+  int lowBound = 0;
+  int highBound = WORKERS_PER_PE;
+  int stride = 1;
+  int tile_size = 1;
+  int loop_dimension = 1;
+  shmem_task_scope_begin();
+  shmem_parallel_for_nbi(count_local_bucket_sizes_async, (void*)(&args), NULL, lowBound, highBound, stride, tile_size, loop_dimension, SHMEM_PARALLEL_FOR_RECURSIVE_MODE);
+  shmem_task_scope_end();
+#else
 #if defined(_OPENMP)
 #pragma omp parallel for private(wid) schedule (dynamic,1) 
 #endif
@@ -405,6 +455,7 @@ static inline int ** count_local_bucket_sizes(KEY_TYPE const ** restrict const m
       local_bucket_sizes[wid][bucket_index]++;
     }
   }
+#endif
 
   timer_stop(&timers[TIMER_BCOUNT]);
 
@@ -430,6 +481,29 @@ static inline int ** count_local_bucket_sizes(KEY_TYPE const ** restrict const m
   return local_bucket_sizes;
 }
 
+#if defined(_SHMEM_WORKERS)
+typedef struct compute_local_bucket_offsets_t {
+  int *** restrict local_bucket_offsets;
+  int const ** restrict const local_bucket_sizes;
+  int *** restrict send_offsets;
+} compute_local_bucket_offsets_t;
+
+void compute_local_bucket_offsets_async(void *arg, int wid) {
+  compute_local_bucket_offsets_t *args = (compute_local_bucket_offsets_t*) arg;
+  int **restrict local_bucket_offsets = *(args->local_bucket_offsets);
+  int const ** restrict const local_bucket_sizes = args->local_bucket_sizes;
+  int *** restrict send_offsets = args->send_offsets;
+
+  local_bucket_offsets[wid][0] = 0;
+  (*send_offsets)[wid][0] = 0;
+  int temp = 0;
+  for(uint64_t i = 1; i < NUM_BUCKETS; i++){
+    temp = local_bucket_offsets[wid][i-1] + local_bucket_sizes[wid][i-1];
+    local_bucket_offsets[wid][i] = temp;
+    (*send_offsets)[wid][i] = temp;
+  } 
+}
+#endif
 
 /*
  * Computes the prefix scan of the bucket sizes to determine the starting locations
@@ -451,6 +525,17 @@ static inline int ** compute_local_bucket_offsets(int const ** restrict const lo
 
   int wid;
   // parallel block
+#if defined(_SHMEM_WORKERS)
+  compute_local_bucket_offsets_t args = { &local_bucket_offsets, local_bucket_sizes, send_offsets };
+  int lowBound = 0;
+  int highBound = WORKERS_PER_PE;
+  int stride = 1;
+  int tile_size = 1;
+  int loop_dimension = 1;
+  shmem_task_scope_begin();
+  shmem_parallel_for_nbi(compute_local_bucket_offsets_async, (void*)(&args), NULL, lowBound, highBound, stride, tile_size, loop_dimension, SHMEM_PARALLEL_FOR_RECURSIVE_MODE);
+  shmem_task_scope_end();
+#else
 #if defined(_OPENMP)
 #pragma omp parallel for private(wid) schedule (dynamic,1) 
 #endif
@@ -464,6 +549,7 @@ static inline int ** compute_local_bucket_offsets(int const ** restrict const lo
       (*send_offsets)[wid][i] = temp;
     } 
   }
+#endif
 
   timer_stop(&timers[TIMER_BOFFSET]);
 
@@ -487,6 +573,31 @@ static inline int ** compute_local_bucket_offsets(int const ** restrict const lo
   return local_bucket_offsets;
 }
 
+#if defined(_SHMEM_WORKERS)
+typedef struct bucketize_local_keys_t {
+  KEY_TYPE *** restrict my_local_bucketed_keys;
+  KEY_TYPE const ** restrict const my_keys;
+  int ** restrict const local_bucket_offsets;  
+} bucketize_local_keys_t;
+
+void bucketize_local_keys_async(void* arg, int wid) {
+  bucketize_local_keys_t* args = (bucketize_local_keys_t*) arg;
+  KEY_TYPE ** restrict my_local_bucketed_keys = *(args->my_local_bucketed_keys);
+  KEY_TYPE const ** restrict const my_keys = args->my_keys;
+  int ** restrict const local_bucket_offsets = args->local_bucket_offsets;
+
+  for(uint64_t i = 0; i < NUM_KEYS_PER_WORKERS; ++i){
+    const KEY_TYPE key = my_keys[wid][i];
+    const uint32_t bucket_index = key / BUCKET_WIDTH; 
+    uint32_t index;
+    assert(local_bucket_offsets[wid][bucket_index] >= 0);
+    index = local_bucket_offsets[wid][bucket_index]++;
+    assert(index < NUM_KEYS_PER_WORKERS);
+    my_local_bucketed_keys[wid][index] = key;
+  }
+}
+#endif
+
 /*
  * Places local keys into their corresponding local bucket.
  * The contents of each bucket are not sorted.
@@ -503,6 +614,17 @@ static inline KEY_TYPE ** bucketize_local_keys(KEY_TYPE const ** restrict const 
 
   int wid;
   // parallel block
+#if defined(_SHMEM_WORKERS)
+  bucketize_local_keys_t args = { &my_local_bucketed_keys, my_keys, local_bucket_offsets };
+  int lowBound = 0;
+  int highBound = WORKERS_PER_PE;
+  int stride = 1;
+  int tile_size = 1;
+  int loop_dimension = 1;
+  shmem_task_scope_begin();
+  shmem_parallel_for_nbi(bucketize_local_keys_async, (void*)(&args), NULL, lowBound, highBound, stride, tile_size, loop_dimension, SHMEM_PARALLEL_FOR_RECURSIVE_MODE);
+  shmem_task_scope_end();
+#else
 #if defined(_OPENMP)
 #pragma omp parallel for private(wid) schedule (dynamic,1) 
 #endif
@@ -517,6 +639,7 @@ static inline KEY_TYPE ** bucketize_local_keys(KEY_TYPE const ** restrict const 
       my_local_bucketed_keys[wid][index] = key;
     }
   }
+#endif
 
   timer_stop(&timers[TIMER_BUCKETIZE]);
 
@@ -612,6 +735,23 @@ static inline KEY_TYPE ** exchange_keys(int const ** restrict const send_offsets
   return my_bucket_keys;
 }
 
+#if defined(_SHMEM_WORKERS)
+void count_local_keys_async(void* arg, int wid) {
+  int ** restrict const my_local_key_counts = *((int *** restrict const )arg);
+
+  const int my_rank = shmem_my_pe();
+  const int v_rank = GET_VIRTUAL_RANK(my_rank, wid);
+  const int my_min_key = v_rank * BUCKET_WIDTH;
+  // Count the occurences of each key in my bucket
+  for(long long int i = 0; i < my_bucket_size[wid]; ++i) {
+    const unsigned int key_index = my_bucket_keys[wid][i] - my_min_key;
+    assert(my_bucket_keys[wid][i] >= my_min_key);
+    assert(key_index < BUCKET_WIDTH);
+    my_local_key_counts[wid][key_index]++;
+  }   
+}
+#endif
+
 /*
  * Counts the occurence of each key in my bucket. 
  * Key indices into the count array are the key's value minus my bucket's 
@@ -631,6 +771,16 @@ static inline int ** count_local_keys()
   const int my_rank = shmem_my_pe();
   int wid;
   // parallel block
+#if defined(_SHMEM_WORKERS)
+  int lowBound = 0;
+  int highBound = WORKERS_PER_PE;
+  int stride = 1;
+  int tile_size = 1;
+  int loop_dimension = 1;
+  shmem_task_scope_begin();
+  shmem_parallel_for_nbi(count_local_keys_async, (void*)(&my_local_key_counts), NULL, lowBound, highBound, stride, tile_size, loop_dimension, SHMEM_PARALLEL_FOR_RECURSIVE_MODE);
+  shmem_task_scope_end();
+#else
 #if defined(_OPENMP)
 #pragma omp parallel for private(wid) schedule (dynamic,1) 
 #endif
@@ -645,6 +795,7 @@ static inline int ** count_local_keys()
       my_local_key_counts[wid][key_index]++;
     }   
   }
+#endif
 
   timer_stop(&timers[TIMER_SORT]);
 
@@ -668,6 +819,42 @@ static inline int ** count_local_keys()
   return my_local_key_counts;
 }
 
+#if defined(_SHMEM_WORKERS)
+typedef struct verify_results_t {
+  int const ** restrict const my_local_key_counts;
+  int* error;
+} verify_results_t;
+
+void verify_results_async(void* arg, int wid) {
+  verify_results_t* args = (verify_results_t*) arg;
+  int const ** restrict const my_local_key_counts = args->my_local_key_counts;
+  int* error = args->error;
+  const int my_rank = shmem_my_pe();
+
+  const int v_rank = GET_VIRTUAL_RANK(my_rank, wid);
+  const int my_min_key = v_rank * BUCKET_WIDTH;
+  const int my_max_key = (v_rank+1) * BUCKET_WIDTH - 1;
+  // Verify all keys are within bucket boundaries
+  for(long long int i = 0; i < my_bucket_size[wid]; ++i){
+    const int key = my_bucket_keys[wid][i];
+    if((key < my_min_key) || (key > my_max_key)){
+      printf("Rank %d Failed Verification!\n",v_rank);
+      printf("Key: %d is outside of bounds [%d, %d]\n", key, my_min_key, my_max_key);
+      error[wid] = 1;
+    }
+  }
+  // Verify the sum of the key population equals the expected bucket size
+  long long int bucket_size_test = 0;
+  for(uint64_t i = 0; i < BUCKET_WIDTH; ++i){
+    bucket_size_test +=  my_local_key_counts[wid][i];
+  }
+  if(bucket_size_test != my_bucket_size[wid]){
+    printf("Rank %d Failed Verification!\n",v_rank);
+    printf("Actual Bucket Size: %lld Should be %lld\n", bucket_size_test, my_bucket_size[wid]);
+    error[wid] = 1;
+  }
+}
+#endif
 /*
  * Verifies the correctness of the sort. 
  * Ensures all keys are within a PE's bucket boundaries.
@@ -685,6 +872,17 @@ static int verify_results(int const ** restrict const my_local_key_counts)
 
   int wid;
   // parallel block
+#if defined(_SHMEM_WORKERS)
+  verify_results_t args = { my_local_key_counts, error };
+  int lowBound = 0;
+  int highBound = WORKERS_PER_PE;
+  int stride = 1;
+  int tile_size = 1;
+  int loop_dimension = 1;
+  shmem_task_scope_begin();
+  shmem_parallel_for_nbi(verify_results_async, (void*)(&args), NULL, lowBound, highBound, stride, tile_size, loop_dimension, SHMEM_PARALLEL_FOR_RECURSIVE_MODE);
+  shmem_task_scope_end();
+#else
 #if defined(_OPENMP)
 #pragma omp parallel for private(wid) schedule (dynamic,1) 
 #endif
@@ -712,6 +910,7 @@ static int verify_results(int const ** restrict const my_local_key_counts)
       error[wid] = 1;
     }
   }
+#endif
 
   // NOT Parallel
   static long long int total_my_bucket_size = 0;
