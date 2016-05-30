@@ -65,21 +65,22 @@ uint64_t MAX_KEY_VAL; // The maximum possible generated key value
 char* log_file;
 
 /*
- * This macro sets the maximum number of workers allowed
+ * This variable sets the maximum number of workers allowed
  * to participate in computation per pe. In actual
  * when the computation is run, there can be 1-n number
  * of workers (n<=WORKERS_PER_PE).
  *
  * In AsyncSHMEM model, these workers are the hclib workers.
  */
+int WORKERS_PER_PE=1;
 #if defined (_SHMEM_WORKERS) || defined (_OPENMP)
-#define WORKERS_PER_PE 512  // == Total number of cores/node on Titan
+#define MAX_CHUNKS_ALLOWED 512
 #define GET_VIRTUAL_RANK(rank, wid) ((rank * WORKERS_PER_PE) + (wid))
 #define GET_REAL_RANK(vrank) ((int)(vrank / WORKERS_PER_PE))
 #define PARALLEL_FOR_MODE SHMEM_PARALLEL_FOR_RECURSIVE_MODE
 //#define PARALLEL_FOR_MODE SHMEM_PARALLEL_FOR_FLAT_MODE
 #else
-#define WORKERS_PER_PE 1
+#define MAX_CHUNKS_ALLOWED 1
 #define GET_VIRTUAL_RANK(rank, wid) (rank)
 #define GET_REAL_RANK(vrank) (vrank)
 #endif
@@ -93,27 +94,27 @@ char** m_argv;
 
 volatile int whose_turn;
 
-long long int receive_offset[WORKERS_PER_PE];
-long long int my_bucket_size[WORKERS_PER_PE];
+long long int* receive_offset;
+long long int* my_bucket_size;
 
 /*
- * In case of WORKERS_PER_PE>1, setting KEY_BUFFER_SIZE=(1uLL<<28uLL) 
+ * In case of WORKERS_PER_PE>1, setting KEY_BUFFER_SIZE_PER_PE=(1uLL<<28uLL) 
  * would cause compilation error (in gasnet) with the declaration of:
- * "KEY_TYPE my_bucket_keys[WORKERS_PER_PE][KEY_BUFFER_SIZE];"
+ * "KEY_TYPE my_bucket_keys[WORKERS_PER_PE][KEY_BUFFER_SIZE_PER_PE];"
  * I am not sure why that is causing the problem. But decreasing
- * the KEY_BUFFER_SIZE as this removes that compilation bug.
+ * the KEY_BUFFER_SIZE_PER_PE as this removes that compilation bug.
  *
- * As an alternative, I left KEY_BUFFER_SIZE=(1uLL<<28uLL)
+ * As an alternative, I left KEY_BUFFER_SIZE_PER_PE=(1uLL<<28uLL)
  * and used shmem_malloc to allocate:
  * "KEY_TYPE **my_bucket_keys"
  * This resolved the compilation error but writing to this
  * array my_bucket_keys using shmem_int_put was causing 
  * SEGFAULT.
  */
-#define KEY_BUFFER_SIZE ((int)((1uLL<<28uLL)/WORKERS_PER_PE))
+#define KEY_BUFFER_SIZE_PER_PE ((int)(1uLL<<28uLL))
 
 // The receive array for the All2All exchange
-KEY_TYPE my_bucket_keys[WORKERS_PER_PE][KEY_BUFFER_SIZE];
+KEY_TYPE* my_bucket_keys[MAX_CHUNKS_ALLOWED];
 
 #ifdef PERMUTE
 int * permute_array;
@@ -163,13 +164,19 @@ static char * parse_params(const int argc, char ** argv)
   }
 
 #if defined(_OPENMP)
+  const char* chunks_env = getenv("ISX_PE_CHUNKS");
+  WORKERS_PER_PE = chunks_env ? atoi(chunks_env) : 1;
 #pragma omp parallel
   actual_num_workers = omp_get_num_threads();
 #elif defined(_SHMEM_WORKERS)
+  const char* chunks_env = getenv("ISX_PE_CHUNKS");
+  WORKERS_PER_PE = chunks_env ? atoi(chunks_env) : 1;
   actual_num_workers = shmem_n_workers();
 #else
   actual_num_workers = 1;
+  WORKERS_PER_PE = 1;
 #endif
+  assert(WORKERS_PER_PE <= MAX_CHUNKS_ALLOWED);
   NUM_PES = (uint64_t) shmem_n_pes();
   MAX_KEY_VAL = DEFAULT_MAX_KEY;
   NUM_BUCKETS = NUM_PES*WORKERS_PER_PE;
@@ -239,7 +246,7 @@ static char * parse_params(const int argc, char ** argv)
 #if defined(_OPENMP)
     printf("  OpenMP Version, total workers: %d\n",actual_num_workers); 
     printf("  Number of Keys per Chunk: %" PRIu64 "\n", NUM_KEYS_PER_WORKERS);
-    printf("  Number of Chunks per PE: %d\n",WORKERS_PER_PE);
+    printf("  Number of Chunks per PE (ISX_PE_CHUNKS): %d\n",WORKERS_PER_PE);
 #elif defined(_SHMEM_WORKERS)
     printf("  AsyncSHMEM Version, total workers: %d\n",actual_num_workers);
     printf("  Number of Keys per Chunk: %" PRIu64 "\n", NUM_KEYS_PER_WORKERS);
@@ -274,6 +281,10 @@ static int bucket_sort(void)
   create_permutation_array();
 #endif
 
+  receive_offset = (long long int*) shmem_malloc(sizeof(long long int) * WORKERS_PER_PE);
+  my_bucket_size = (long long int*) shmem_malloc(sizeof(long long int) * WORKERS_PER_PE);
+  for(int i=0; i<WORKERS_PER_PE; i++) my_bucket_keys[i] = (KEY_TYPE *) shmem_malloc(sizeof(KEY_TYPE) 
+                                                                  * ((int)(KEY_BUFFER_SIZE_PER_PE/WORKERS_PER_PE)));
   for(uint64_t i = 0; i < (NUM_ITERATIONS + BURN_IN); ++i)
   {
     // Reset offsets used in exchange_keys
