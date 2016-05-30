@@ -73,10 +73,11 @@ char* log_file;
  * In AsyncSHMEM model, these workers are the hclib workers.
  */
 #if defined (_SHMEM_WORKERS) || defined (_OPENMP)
-#define WORKERS_PER_PE 64 // == Total number of cores/node on Titan
+#define WORKERS_PER_PE 512  // == Total number of cores/node on Titan
 #define GET_VIRTUAL_RANK(rank, wid) ((rank * WORKERS_PER_PE) + (wid))
 #define GET_REAL_RANK(vrank) ((int)(vrank / WORKERS_PER_PE))
 #define PARALLEL_FOR_MODE SHMEM_PARALLEL_FOR_RECURSIVE_MODE
+//#define PARALLEL_FOR_MODE SHMEM_PARALLEL_FOR_FLAT_MODE
 #else
 #define WORKERS_PER_PE 1
 #define GET_VIRTUAL_RANK(rank, wid) (rank)
@@ -84,7 +85,6 @@ char* log_file;
 #endif
 uint64_t NUM_KEYS_PER_WORKERS;
 int actual_num_workers;
-//#define PARALLEL_FOR_MODE SHMEM_PARALLEL_FOR_FLAT_MODE
 // This is done due to current limitation that entrypoint function
 // cannot accept arguments. This will be resolved in future version of 
 // AsyncSHMEM
