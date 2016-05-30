@@ -15,8 +15,8 @@ WEAKISO = 3
 .PHONY: all clean debug
 
 SRCS := $(wildcard *.c)
-OBJDIR := obj
-BINDIR := bin
+OBJDIR := objOMP
+BINDIR := omp
 STRONG_EXE = isx.strong.omp
 WEAK_EXE = isx.weak.omp 
 WEAKISO_EXE = isx.weak_iso.omp
@@ -60,12 +60,8 @@ $(OBJDIR)/%.o_wi: %.c
 	$(CC) $(CFLAGS) -D SCALING_OPTION=$(WEAKISO) -c $< -o $@
 
 clean:
-	@- $(RM) $(BINDIR)/$(STRONG_EXE)
-	@- $(RM) $(STRONG_OBJS)
-	@- $(RM) $(BINDIR)/$(WEAK_EXE)
-	@- $(RM) $(WEAK_OBJS)
-	@- $(RM) $(BINDIR)/$(WEAKISO_EXE)
-	@- $(RM) $(WEAKISO_OBJS)
+	@- $(RM) -rf $(BINDIR)
+	@- $(RM) -rf $(OBJDIR)
 
 depend:
 	    makedepend -- $(CFLAGS) -- $(SRCS)
