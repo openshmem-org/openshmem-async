@@ -73,7 +73,7 @@ char* log_file;
  * In AsyncSHMEM model, these workers are the hclib workers.
  */
 #if defined (_SHMEM_WORKERS) || defined (_OPENMP)
-#define WORKERS_PER_PE 16 // == Total number of cores/node on Titan
+#define WORKERS_PER_PE 64 // == Total number of cores/node on Titan
 #define GET_VIRTUAL_RANK(rank, wid) ((rank * WORKERS_PER_PE) + (wid))
 #define GET_REAL_RANK(vrank) ((int)(vrank / WORKERS_PER_PE))
 #define PARALLEL_FOR_MODE SHMEM_PARALLEL_FOR_RECURSIVE_MODE
@@ -235,15 +235,18 @@ static char * parse_params(const int argc, char ** argv)
 #ifdef PERMUTE
     printf("Random Permute Used in ATA.\n");
 #endif
+    printf("  Number of Keys per PE: %" PRIu64 "\n", NUM_KEYS_PER_PE);
 #if defined(_OPENMP)
     printf("  OpenMP Version, total workers: %d\n",actual_num_workers); 
+    printf("  Number of Keys per Chunk: %" PRIu64 "\n", NUM_KEYS_PER_WORKERS);
+    printf("  Number of Chunks per PE: %d\n",WORKERS_PER_PE);
 #elif defined(_SHMEM_WORKERS)
     printf("  AsyncSHMEM Version, total workers: %d\n",actual_num_workers);
+    printf("  Number of Keys per Chunk: %" PRIu64 "\n", NUM_KEYS_PER_WORKERS);
+    printf("  Number of Chunks per PE: %d\n",WORKERS_PER_PE);
 #else
     printf("  AsyncSHMEM Sequential version\n");
 #endif
-    printf("  Number of Keys per PE: %" PRIu64 "\n", NUM_KEYS_PER_PE);
-    printf("  Number of Keys per Workers: %" PRIu64 "\n", NUM_KEYS_PER_WORKERS);
     printf("  Max Key Value: %" PRIu64 "\n", MAX_KEY_VAL);
     printf("  Bucket Width: %" PRIu64 "\n", BUCKET_WIDTH);
     printf("  Number of Iterations: %u\n", NUM_ITERATIONS);
