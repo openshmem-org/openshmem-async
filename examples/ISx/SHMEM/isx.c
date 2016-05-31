@@ -64,6 +64,11 @@ volatile int whose_turn;
 long long int receive_offset = 0;
 long long int my_bucket_size = 0;
 
+#define EXTRA_STATS
+
+#ifdef EXTRA_STATS
+float avg_time=0, avg_time_all2all = 0;
+#endif
 
 #define KEY_BUFFER_SIZE (1uLL<<28uLL)
 
@@ -78,6 +83,14 @@ int main(const int argc,  char ** argv)
 {
   shmem_init();
 
+  #ifdef EXTRA_STATS
+  _timer_t total_time;
+  if(shmem_my_pe() == 0) {
+    printf("\n-----\nmkdir timedrun fake\n\n");
+    timer_start(&total_time);
+  }
+#endif
+
   init_shmem_sync_array(pSync); 
 
   char * log_file = parse_params(argc, argv);
@@ -85,6 +98,21 @@ int main(const int argc,  char ** argv)
   int err = bucket_sort();
 
   log_times(log_file);
+
+  #ifdef EXTRA_STATS
+  if(shmem_my_pe() == 0) {
+    just_timer_stop(&total_time);
+    double tTime = ( total_time.stop.tv_sec - total_time.start.tv_sec ) + ( total_time.stop.tv_nsec - total_time.start.tv_nsec )/1E9;
+    avg_time *= 1000;
+    avg_time_all2all *= 1000;
+    printf("\n============================ MMTk Statistics Totals ============================\n");
+    printf("time\ttimeAll2All\tnWorkers\tnPEs\n");
+    printf("%.3f\t%.3f\t1\t%d\n",avg_time,avg_time_all2all,NUM_PES);
+    printf("Total time: %.3f\n",avg_time);
+    printf("------------------------------ End MMTk Statistics -----------------------------\n");
+    printf("===== TEST PASSED in %.3f msec =====\n",(tTime*1000));
+  }
+#endif
 
   shmem_finalize();
   return err;
@@ -626,6 +654,9 @@ static void report_summary_stats(void)
     for(uint64_t i = 0; i < num_records; ++i){
       temp += timers[TIMER_TOTAL].all_times[i];
     }
+#ifdef EXTRA_STATS
+    avg_time = temp/num_records;
+#endif
       printf("Average total time (per PE): %f seconds\n", temp/num_records);
   }
 
@@ -635,6 +666,9 @@ static void report_summary_stats(void)
     for(uint64_t i = 0; i < num_records; ++i){
       temp += timers[TIMER_ATA_KEYS].all_times[i];
     }
+#ifdef EXTRA_STATS
+    avg_time_all2all = temp/num_records;
+#endif
     printf("Average all2all time (per PE): %f seconds\n", temp/num_records);
   }
 }

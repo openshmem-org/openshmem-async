@@ -72,6 +72,8 @@ void report_times(void);
 
 void timer_start(_timer_t * const timer);
 
+void just_timer_stop(_timer_t * const timer);
+
 void timer_stop(_timer_t * const timer);
 
 void timer_count(_timer_t * const timer, const unsigned int val);

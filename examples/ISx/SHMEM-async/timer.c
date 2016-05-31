@@ -125,7 +125,7 @@ void timer_start(_timer_t * const timer)
 #endif
 }
 
-void timer_stop(_timer_t * const timer)
+void just_timer_stop(_timer_t * const timer)
 {
 #ifdef __MACH__
   // OS X does not have clock_gettime, use clock_get_time
@@ -139,6 +139,11 @@ void timer_stop(_timer_t * const timer)
 #else
   clock_gettime(CLOCK_MONOTONIC, &(timer->stop));
 #endif
+}
+
+void timer_stop(_timer_t * const timer)
+{
+  just_timer_stop(timer);
   timer->seconds[timer->seconds_iter] = (double) (timer->stop.tv_sec - timer->start.tv_sec);
   timer->seconds[timer->seconds_iter] += (double) (timer->stop.tv_nsec - timer->start.tv_nsec)*1e-9;
   timer->seconds_iter++;

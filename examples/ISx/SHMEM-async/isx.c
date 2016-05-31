@@ -64,6 +64,11 @@ uint64_t BUCKET_WIDTH; // The size of each bucket
 uint64_t MAX_KEY_VAL; // The maximum possible generated key value
 char* log_file;
 
+#define EXTRA_STATS
+
+#ifdef EXTRA_STATS
+float avg_time=0, avg_time_all2all = 0;
+#endif
 /*
  * This variable sets the maximum number of workers allowed
  * to participate in computation per pe. In actual
@@ -138,10 +143,32 @@ int main (int argc, char ** argv) {
   m_argc = argc;
   m_argv = argv;
 
+#ifdef EXTRA_STATS
+  _timer_t total_time;
+  if(shmem_my_pe() == 0) {
+    printf("\n-----\nmkdir timedrun fake\n\n");
+    timer_start(&total_time);
+  }
+#endif
 #if defined(_SHMEM_WORKERS)
   shmem_workers_init(entrypoint, NULL);
 #else
   entrypoint(NULL);
+#endif
+
+#ifdef EXTRA_STATS
+  if(shmem_my_pe() == 0) {
+    just_timer_stop(&total_time);
+    double tTime = ( total_time.stop.tv_sec - total_time.start.tv_sec ) + ( total_time.stop.tv_nsec - total_time.start.tv_nsec )/1E9;
+    avg_time *= 1000;
+    avg_time_all2all *= 1000;
+    printf("\n============================ MMTk Statistics Totals ============================\n");
+    printf("time\ttimeAll2All\tnWorkers\tnPEs\n");
+    printf("%.3f\t%.3f\t%d\t%d\n",avg_time,avg_time_all2all,actual_num_workers,NUM_PES);
+    printf("Total time: %.3f\n",avg_time);
+    printf("------------------------------ End MMTk Statistics -----------------------------\n");
+    printf("===== TEST PASSED in %.3f msec =====\n",(tTime*1000));
+  }
 #endif
 
   shmem_finalize ();
@@ -1008,6 +1035,9 @@ static void report_summary_stats(void)
     for(uint64_t i = 0; i < num_records; ++i){
       temp += timers[TIMER_TOTAL].all_times[i];
     }
+#ifdef EXTRA_STATS
+    avg_time = temp/num_records;
+#endif
       printf("Average total time (per PE): %f seconds\n", temp/num_records);
   }
 
@@ -1017,6 +1047,9 @@ static void report_summary_stats(void)
     for(uint64_t i = 0; i < num_records; ++i){
       temp += timers[TIMER_ATA_KEYS].all_times[i];
     }
+#ifdef EXTRA_STATS
+    avg_time_all2all = temp/num_records;
+#endif
     printf("Average all2all time (per PE): %f seconds\n", temp/num_records);
   }
 }
