@@ -749,11 +749,17 @@ static inline KEY_TYPE ** exchange_keys(int const ** restrict const send_offsets
         v_my_rank, v_target_pe, write_offset_into_target, read_offset_from_self, my_send_size);
 #endif
 
-    shmem_int_put(&(my_bucket_keys[chunk_r_target_pe][write_offset_into_target]),
-                  &(my_local_bucketed_keys[chunk][read_offset_from_self]),
-                  my_send_size,
-                  r_target_pe);
-
+    if(r_target_pe == my_rank) {
+      memcpy(&(my_bucket_keys[chunk_r_target_pe][write_offset_into_target]),
+             &(my_local_bucketed_keys[chunk][read_offset_from_self]),
+             my_send_size * sizeof(KEY_TYPE)); 
+    }
+    else {
+      shmem_int_put(&(my_bucket_keys[chunk_r_target_pe][write_offset_into_target]),
+                    &(my_local_bucketed_keys[chunk][read_offset_from_self]),
+                    my_send_size,
+                    r_target_pe);
+    }
     total_keys_sent[chunk] += my_send_size;
   } }
 
