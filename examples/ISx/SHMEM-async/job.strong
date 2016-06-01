@@ -7,7 +7,7 @@
 #PBS -V
 
 export ISX_PE_CHUNKS=512
-THREADS=( 16 14 12 10 8 6 4 2 1 )
+THREADS=( 16 12 8 4 1 )
 ITER=8
 HCLIB=1	# 0=HCLIB_ONLY; 1=OMP_ONLY; 2=SHMEM_ONLY
 SHMEM_ASYNC_EXE="./ashmem/isx.strong"
@@ -31,6 +31,11 @@ for workers in "${THREADS[@]}"; do
       rm ${LOGNAME}
       export HCLIB_WORKERS=${workers} 
       LOGFILE="${LOGDIR}/${PREFIX}.SHMEM.hclib-${workers}.places-${SHM_TASK}.log"
+      #cores=8
+      #if [ ${workers} -gt 8 ]; then
+      #  cores=16
+      #fi
+      #aprun -n ${SHM_TASK} -d ${cores} ${SHMEM_ASYNC_EXE} ${BENCH_OPTION} >& "${LOGNAME}"
       aprun -n ${SHM_TASK} -d ${workers} ${SHMEM_ASYNC_EXE} ${BENCH_OPTION} >& "${LOGNAME}"
       cat "${LOGNAME}" | sed '/resources: utime/d' > "${LOGNAME}.t1"
       cat "${LOGNAME}.t1" | sed '/WARNING: Running without a provided HCLIB_HPT_FILE/d' >> "${LOGFILE}"
@@ -39,11 +44,21 @@ for workers in "${THREADS[@]}"; do
       rm ${LOGNAME}
       export OMP_NUM_THREADS=${workers}
       LOGFILE="${LOGDIR}/${PREFIX}.SHMEM.omp-${workers}.places-${SHM_TASK}.log"
+      #cores=8
+      #if [ ${workers} -gt 8 ]; then
+      #  cores=16
+      #fi
+      #aprun -n ${SHM_TASK} -d ${cores} ${SHMEM_OMP_EXE} ${BENCH_OPTION} >& "${LOGNAME}"
       aprun -n ${SHM_TASK} -d ${workers} ${SHMEM_OMP_EXE} ${BENCH_OPTION} >& "${LOGNAME}"
       cat "${LOGNAME}" | sed '/resources: utime/d' >> "${LOGFILE}"
     elif [ ${HCLIB} -eq 2 ]; then
       rm ${LOGNAME}
       LOGFILE="${LOGDIR}/${PREFIX}.SHMEM.places-${workers}.log"
+      #cores=2
+      #if [ ${workers} -gt 8 ]; then
+      #  cores=1
+      #fi
+      #aprun -n ${workers} -d ${cores} ${SHMEM_EXE} ${BENCH_OPTION} >& "${LOGNAME}"
       aprun -n ${workers} -d 1 ${SHMEM_EXE} ${BENCH_OPTION} >& "${LOGNAME}"
       cat "${LOGNAME}" | sed '/resources: utime/d' >> "${LOGFILE}"
     else

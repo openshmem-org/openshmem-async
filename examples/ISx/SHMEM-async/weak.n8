@@ -1,0 +1,76 @@
+#!/bin/bash
+#PBS -A csc205
+#PBS -N pbbs
+#PBS -j oe
+#PBS -q debug
+#PBS -l walltime=00:06:00,nodes=8
+#PBS -V
+
+export ISX_PE_CHUNKS=512
+ITER=1
+HCLIB=3	# 0=HCLIB_ONLY; 1=OMP_ONLY; 2=SHMEM_ONLY; 3=ALL
+SHMEM_ASYNC_EXE="./ashmem/isx.weak"
+SHMEM_OMP_EXE="./omp/isx.weak"
+SHMEM_EXE="../SHMEM/bin/isx.weak"
+export PREFIX="ISxWeak.3096.1024"
+BENCH_OPTION="16777216 /tmp/del.$$"
+export SHM_TASK=16
+workers=8
+
+#############
+
+cd $PBS_O_WORKDIR
+LOGDIR="/ccs/proj/csc205/logs/isx"
+export  LD_PRELOAD=/lustre/atlas/sw/tbb/43/sles11.3_gnu4.8.2/source/build/linux_intel64_gcc_cc4.8.2_libc2.11.3_kernel3.0.101_release/libtbbmalloc_proxy.so.2
+
+TOTAL_CORES=`expr $workers \* $SHM_TASK`
+runID=0
+while [ $runID -lt ${ITER} ]; do
+    LOGNAME=`mktemp -p ${LOGDIR}`
+    if [ ${HCLIB} -eq 0 ]; then
+      rm ${LOGNAME}
+      export HCLIB_WORKERS=${workers} 
+      LOGFILE="${LOGDIR}/${PREFIX}.SHMEM.hclib-${workers}.cores-${TOTAL_CORES}.log"
+      aprun -n ${SHM_TASK} -S 1 -d ${workers} ${SHMEM_ASYNC_EXE} ${BENCH_OPTION} >& "${LOGNAME}"
+      cat "${LOGNAME}" | sed '/resources: utime/d' > "${LOGNAME}.t1"
+      cat "${LOGNAME}.t1" | sed '/WARNING: Running without a provided HCLIB_HPT_FILE/d' >> "${LOGFILE}"
+      rm "${LOGNAME}.t1"
+    elif [ ${HCLIB} -eq 1 ]; then
+      rm ${LOGNAME}
+      export OMP_NUM_THREADS=${workers}
+      LOGFILE="${LOGDIR}/${PREFIX}.SHMEM.omp-${workers}.cores-${TOTAL_CORES}.log"
+      aprun -n ${SHM_TASK} -S 1 -d ${workers} ${SHMEM_OMP_EXE} ${BENCH_OPTION} >& "${LOGNAME}"
+      cat "${LOGNAME}" | sed '/resources: utime/d' >> "${LOGFILE}"
+    elif [ ${HCLIB} -eq 2 ]; then
+      rm ${LOGNAME}
+      LOGFILE="${LOGDIR}/${PREFIX}.SHMEM.cores-${TOTAL_CORES}.log"
+      aprun -n ${TOTAL_CORES} -d 1 ${SHMEM_EXE} ${BENCH_OPTION} >& "${LOGNAME}"
+      cat "${LOGNAME}" | sed '/resources: utime/d' >> "${LOGFILE}"
+    elif [ ${HCLIB} -eq 3 ]; then
+      # First hclib
+      rm ${LOGNAME}
+      export HCLIB_WORKERS=${workers}
+      LOGFILE="${LOGDIR}/${PREFIX}.SHMEM.hclib-${workers}.cores-${TOTAL_CORES}.log"
+      aprun -n ${SHM_TASK} -S 1 -d ${workers} ${SHMEM_ASYNC_EXE} ${BENCH_OPTION} >& "${LOGNAME}"
+      cat "${LOGNAME}" | sed '/resources: utime/d' > "${LOGNAME}.t1"
+      cat "${LOGNAME}.t1" | sed '/WARNING: Running without a provided HCLIB_HPT_FILE/d' >> "${LOGFILE}"
+      rm "${LOGNAME}.t1"
+
+      # now OpenMP
+      rm ${LOGNAME}
+      export OMP_NUM_THREADS=${workers}
+      LOGFILE="${LOGDIR}/${PREFIX}.SHMEM.omp-${workers}.cores-${TOTAL_CORES}.log"
+      aprun -n ${SHM_TASK} -S 1 -d ${workers} ${SHMEM_OMP_EXE} ${BENCH_OPTION} >& "${LOGNAME}"
+      cat "${LOGNAME}" | sed '/resources: utime/d' >> "${LOGFILE}"
+
+      #now SHMEM
+      rm ${LOGNAME}
+      LOGFILE="${LOGDIR}/${PREFIX}.SHMEM.cores-${TOTAL_CORES}.log"
+      aprun -n ${TOTAL_CORES} -d 1 ${SHMEM_EXE} ${BENCH_OPTION} >& "${LOGNAME}"
+      cat "${LOGNAME}" | sed '/resources: utime/d' >> "${LOGFILE}"
+    else
+      echo "ERROR: Value of Variable HCLIB=${HCLIB} unsupported"
+      exit
+    fi
+    runID=`expr ${runID} + 1`
+done
