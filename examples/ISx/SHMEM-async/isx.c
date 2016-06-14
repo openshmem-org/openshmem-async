@@ -369,17 +369,17 @@ static int bucket_sort(void)
 
     // Reset offsets used in exchange_keys
     memset(receive_offset, 0x00, CHUNKS_PER_PE * sizeof(long long int));
-    memset(my_bucket_size, 0x00, CHUNKS_PER_PE * sizeof(long long int));
+    //memset(my_bucket_size, 0x00, CHUNKS_PER_PE * sizeof(long long int));
 
     memset(total_keys_per_pe_per_chunk, 0x00, NUM_PES * CHUNKS_PER_PE * sizeof(long long int));
-    memset(starting_index_pe_sent_bucket, 0x00, NUM_PES * sizeof(long long int));
-    memset(starting_index_pe_receive_bucket, 0x00, NUM_PES * sizeof(long long int));
-    for(int j=0; j<NUM_PES; j++) {
-      memset(total_keys_per_pe_per_chunk_alltoall[j], 0x00, sizeof(long long int) * CHUNKS_PER_PE);
-      memset(starting_index_pe_receive_bucket_alltoall[j], 0x00, sizeof(long long int) * NUM_PES);
-    }
-    memset(my_bucket_keys_received, 0x00, sizeof(KEY_TYPE) * KEY_BUFFER_SIZE_PER_PE);
-    memset(my_bucket_keys_sent, 0x00, sizeof(KEY_TYPE) * KEY_BUFFER_SIZE_PER_PE);
+    //memset(starting_index_pe_sent_bucket, 0x00, NUM_PES * sizeof(long long int));
+    //memset(starting_index_pe_receive_bucket, 0x00, NUM_PES * sizeof(long long int));
+    //for(int j=0; j<NUM_PES; j++) {
+      //memset(total_keys_per_pe_per_chunk_alltoall[j], 0x00, sizeof(long long int) * CHUNKS_PER_PE);
+      //memset(starting_index_pe_receive_bucket_alltoall[j], 0x00, sizeof(long long int) * NUM_PES);
+    //}
+    //memset(my_bucket_keys_received, 0x00, sizeof(KEY_TYPE) * KEY_BUFFER_SIZE_PER_PE);
+    //memset(my_bucket_keys_sent, 0x00, sizeof(KEY_TYPE) * KEY_BUFFER_SIZE_PER_PE);
 
 // Time phase = 1703.453
     KEY_TYPE ** my_keys = make_input();
@@ -896,7 +896,7 @@ static inline KEY_TYPE ** exchange_keys(int const ** restrict const send_offsets
   static long long int total_num_keys = 0;
   for(int i=0; i<NUM_PES; i++) {
     memset(keys_sent_currently_pe_chunk[i], 0x00, sizeof(long long int) * CHUNKS_PER_PE);
-    memset(fixed_starting_index_pe_chunk[i], 0x00, sizeof(long long int) * CHUNKS_PER_PE);
+    //memset(fixed_starting_index_pe_chunk[i], 0x00, sizeof(long long int) * CHUNKS_PER_PE);
     long long int keys_in = 0, keys_out = 0;
     for(int j=0; j<CHUNKS_PER_PE; j++) {
       keys_in += total_keys_per_pe_per_chunk_alltoall[i][j];
@@ -1001,8 +1001,8 @@ static inline KEY_TYPE ** exchange_keys(int const ** restrict const send_offsets
    * This index is in the array my_bucket_keys_sent. We will now switch to this array
    * to store the received keys 
    */
-  memset(total_keys_per_pe_per_chunk, 0x00, sizeof(long long int) * NUM_PES * CHUNKS_PER_PE);
-  memset(my_bucket_keys_sent, 0x00, sizeof(KEY_TYPE) * KEY_BUFFER_SIZE_PER_PE);
+  //memset(total_keys_per_pe_per_chunk, 0x00, sizeof(long long int) * NUM_PES * CHUNKS_PER_PE);
+  //memset(my_bucket_keys_sent, 0x00, sizeof(KEY_TYPE) * KEY_BUFFER_SIZE_PER_PE);
     
   long long keys_index = 0;
   for(int chunk=0; chunk<CHUNKS_PER_PE; chunk++) {
