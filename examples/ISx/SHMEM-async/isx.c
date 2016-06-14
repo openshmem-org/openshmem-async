@@ -70,12 +70,8 @@ char* log_file;
 float avg_time=0, avg_time_all2all = 0;
 #endif
 /*
- * This variable sets the maximum number of workers allowed
- * to participate in computation per pe. In actual
- * when the computation is run, there can be 1-n number
- * of workers (n<=CHUNKS_PER_PE).
- *
- * In AsyncSHMEM model, these workers are the hclib workers.
+ * This variable sets the maximum number of chunks allowed
+ * to participate in computation per pe.
  */
 int CHUNKS_PER_PE=1;
 #if defined (_SHMEM_WORKERS) || defined (_OPENMP)
@@ -120,6 +116,33 @@ long long int* my_bucket_size;
 
 // The receive array for the All2All exchange
 KEY_TYPE* my_bucket_keys[MAX_CHUNKS_ALLOWED];
+
+// used at sender PE to hold the number of keys its planning to 
+// exchange with each of the chunk at the remote PE
+long long int* total_keys_per_pe_per_chunk;
+// this is the result of alltoall operation after each
+// PE sends their list of total_keys_per_pe_per_chunk
+long long int** total_keys_per_pe_per_chunk_alltoall;
+// we subdivide both the sent and receive copies of my_bucket_keys
+// variable into regions for each PE and each of their chunks.
+
+// Here we store the starting index in the my_bucket_keys_sent array
+// for a particular PE's keys
+long long int* starting_index_pe_sent_bucket;
+// Similar to above but this is meant for the my_bucket_keys_received array
+long long int* starting_index_pe_receive_bucket;
+// result of the alltoall operation of the above variable starting_index_pe_receive_bucket
+long long int** starting_index_pe_receive_bucket_alltoall;
+// this array contains keys received from remote PEs and their chunks
+// after the key exchange call
+static KEY_TYPE* my_bucket_keys_received;
+#define MY_START_INDEX_RECEIVE_BUCKET(pe, myrank) (starting_index_pe_receive_bucket_alltoall[pe][myrank]) 
+#define GET_INDEX_RECEIVE_BUCKET(pe, myrank, x)  (MY_START_INDEX_RECEIVE_BUCKET(pe, myrank) + (x))
+
+// this array contains the key this PE would sent to all the remote PE and their respective chunks
+static KEY_TYPE* my_bucket_keys_sent;
+#define START_INDEX_PE_SENT_BUCKET(pe)  starting_index_pe_sent_bucket[pe]
+#define GET_INDEX_SENT_BUCKET(pe, x)  (START_INDEX_PE_SENT_BUCKET(pe) + x)
 
 #ifdef PERMUTE
 int * permute_array;
@@ -308,22 +331,52 @@ static int bucket_sort(void)
   create_permutation_array();
 #endif
 
+  /*
+   * These two allocations are 1gb each. I have found that moving these allocation
+   * later in the code (and not here), i.e. after doing below other small allocations, would
+   * cause unexplained segfaults. Hence, its IMPORTANT do not move this allocation
+   * from this place.
+   */
+  my_bucket_keys_received = (KEY_TYPE *) shmem_malloc(sizeof(KEY_TYPE) * KEY_BUFFER_SIZE_PER_PE);
+  my_bucket_keys_sent = (KEY_TYPE *) shmem_malloc(sizeof(KEY_TYPE) * KEY_BUFFER_SIZE_PER_PE);
+
   receive_offset = (long long int*) shmem_malloc(sizeof(long long int) * CHUNKS_PER_PE);
   my_bucket_size = (long long int*) shmem_malloc(sizeof(long long int) * CHUNKS_PER_PE);
   for(int i=0; i<CHUNKS_PER_PE; i++) my_bucket_keys[i] = (KEY_TYPE *) shmem_malloc(sizeof(KEY_TYPE) 
                                                                   * ((int)(KEY_BUFFER_SIZE_PER_PE/CHUNKS_PER_PE)));
+
+  starting_index_pe_sent_bucket = (long long int*) malloc(sizeof(long long int) * NUM_PES);
+  starting_index_pe_receive_bucket = (long long int*) shmem_malloc(sizeof(long long int) * NUM_PES);
+  starting_index_pe_receive_bucket_alltoall = (long long int**) shmem_malloc(sizeof(long long int*) * NUM_PES);
+  total_keys_per_pe_per_chunk = (long long int*) shmem_malloc(sizeof(long long int) * NUM_PES * CHUNKS_PER_PE);
+  total_keys_per_pe_per_chunk_alltoall = (long long int**) shmem_malloc(sizeof(long long int*) * NUM_PES * CHUNKS_PER_PE);
+  for(int i=0; i<NUM_PES; i++) {
+    total_keys_per_pe_per_chunk_alltoall[i] = (long long int*) shmem_malloc(sizeof(long long int) * CHUNKS_PER_PE);
+    starting_index_pe_receive_bucket_alltoall[i] = (long long int*) shmem_malloc(sizeof(long long int) * NUM_PES);
+  }
+
   for(uint64_t i = 0; i < (NUM_ITERATIONS + BURN_IN); ++i)
   {
-    // Reset offsets used in exchange_keys
-    memset(receive_offset, 0x00, CHUNKS_PER_PE * sizeof(long long int));
-    memset(my_bucket_size, 0x00, CHUNKS_PER_PE * sizeof(long long int));
-
     // Reset timers after burn in 
     if(i == BURN_IN){ init_timers(NUM_ITERATIONS); } 
 
     shmem_barrier_all();
 
     timer_start(&timers[TIMER_TOTAL]);
+
+    // Reset offsets used in exchange_keys
+    memset(receive_offset, 0x00, CHUNKS_PER_PE * sizeof(long long int));
+    memset(my_bucket_size, 0x00, CHUNKS_PER_PE * sizeof(long long int));
+
+    memset(total_keys_per_pe_per_chunk, 0x00, NUM_PES * CHUNKS_PER_PE * sizeof(long long int));
+    memset(starting_index_pe_sent_bucket, 0x00, NUM_PES * sizeof(long long int));
+    memset(starting_index_pe_receive_bucket, 0x00, NUM_PES * sizeof(long long int));
+    for(int j=0; j<NUM_PES; j++) {
+      memset(total_keys_per_pe_per_chunk_alltoall[j], 0x00, sizeof(long long int) * CHUNKS_PER_PE);
+      memset(starting_index_pe_receive_bucket_alltoall[j], 0x00, sizeof(long long int) * NUM_PES);
+    }
+    memset(my_bucket_keys_received, 0x00, sizeof(KEY_TYPE) * KEY_BUFFER_SIZE_PER_PE);
+    memset(my_bucket_keys_sent, 0x00, sizeof(KEY_TYPE) * KEY_BUFFER_SIZE_PER_PE);
 
 // Time phase = 1703.453
     KEY_TYPE ** my_keys = make_input();
@@ -357,25 +410,25 @@ static int bucket_sort(void)
       err = verify_results(my_local_key_counts);
     }
 
-#if 0
-    for(int chunk=0; chunk<CHUNKS_PER_PE; chunk++) {
-      free(my_local_bucketed_keys[chunk]);
-      free(my_keys[chunk]);
-      free(local_bucket_sizes[chunk]);
-      free(local_bucket_offsets[chunk]);
-      free(send_offsets[chunk]);
-      free(my_local_key_counts[chunk]);
-    }
-    free(my_local_bucketed_keys);
-    free(my_keys);
-    free(local_bucket_sizes);
-    free(local_bucket_offsets);
-    free(send_offsets);
-    free(my_local_key_counts);
-#endif
-
     shmem_barrier_all();
   }
+
+#if 0  // Not freeing up the resources as its segfaulting
+  for(int k=0; k<NUM_PES; k++) {
+    shmem_free(total_keys_per_pe_per_chunk_alltoall[k]);
+    shmem_free(starting_index_pe_receive_bucket_alltoall[k]);
+  }
+  shmem_free(total_keys_per_pe_per_chunk_alltoall);
+  shmem_free(total_keys_per_pe_per_chunk);
+  shmem_free(starting_index_pe_receive_bucket_alltoall);
+   shmem_free(starting_index_pe_receive_bucket);
+  shmem_free(starting_index_pe_sent_bucket);
+  for(int k=0; k<CHUNKS_PER_PE; k++) shmem_free(my_bucket_keys[k]);
+  shmem_free(my_bucket_size);
+  shmem_free(receive_offset);
+  shmem_free(my_bucket_keys_sent);
+  shmem_free(my_bucket_keys_received);
+#endif
 
   return err;
 }
@@ -712,7 +765,6 @@ static inline KEY_TYPE ** bucketize_local_keys(KEY_TYPE const ** restrict const 
   return my_local_bucketed_keys;
 }
 
-
 /*
  * Each PE sends the contents of its local buckets to the PE that owns that bucket.
  */
@@ -723,9 +775,11 @@ static inline KEY_TYPE ** exchange_keys(int const ** restrict const send_offsets
   timer_start(&timers[TIMER_ATA_KEYS]);
 
   const int my_rank = shmem_my_pe();
-  unsigned int total_keys_sent[CHUNKS_PER_PE];
-  memset(total_keys_sent, 0x00, CHUNKS_PER_PE*sizeof(int));
 
+  /*
+   * We first calculate the number of keys we would be sending to
+   * each of the chunks in all the remote PEs. 
+   */
   for(int chunk=0; chunk<CHUNKS_PER_PE; chunk++) {
   const int v_my_rank = GET_VIRTUAL_RANK(my_rank, chunk);
   for(uint64_t i = 0; i < NUM_PES*CHUNKS_PER_PE; ++i){
@@ -743,30 +797,198 @@ static inline KEY_TYPE ** exchange_keys(int const ** restrict const send_offsets
     const int my_send_size = local_bucket_sizes[chunk][v_target_pe];
     const int min_v_rank_target_pe = GET_VIRTUAL_RANK(r_target_pe, 0);
     const int chunk_r_target_pe = v_target_pe - min_v_rank_target_pe;
-    const long long int write_offset_into_target = shmem_longlong_fadd(&receive_offset[chunk_r_target_pe], (long long int)my_send_size, r_target_pe);
-#ifdef DEBUG
-    printf("V_Rank: %d Target: %d Offset into target: %lld Offset into myself: %d Send Size: %d\n",
-        v_my_rank, v_target_pe, write_offset_into_target, read_offset_from_self, my_send_size);
-#endif
+    total_keys_per_pe_per_chunk[(r_target_pe * CHUNKS_PER_PE) + chunk_r_target_pe] += my_send_size;
+  }} 
 
-    if(r_target_pe == my_rank) {
-      memcpy(&(my_bucket_keys[chunk_r_target_pe][write_offset_into_target]),
-             &(my_local_bucketed_keys[chunk][read_offset_from_self]),
-             my_send_size * sizeof(KEY_TYPE)); 
+  /*
+   * We should inform the remote PEs about the number 
+   * of keys we would be sending them for each of their chunks
+   */
+  for(int i=0; i<NUM_PES; i++) {
+    if(my_rank == i) {  
+      memcpy(total_keys_per_pe_per_chunk_alltoall[my_rank], 
+             &(total_keys_per_pe_per_chunk[my_rank * CHUNKS_PER_PE]), 
+             CHUNKS_PER_PE * sizeof(long long int));
     }
     else {
-      shmem_int_put(&(my_bucket_keys[chunk_r_target_pe][write_offset_into_target]),
-                    &(my_local_bucketed_keys[chunk][read_offset_from_self]),
-                    my_send_size,
-                    r_target_pe);
+      shmem_longlong_put(total_keys_per_pe_per_chunk_alltoall[my_rank], 
+             &(total_keys_per_pe_per_chunk[i * CHUNKS_PER_PE]), 
+             (long long int) CHUNKS_PER_PE , i);
     }
-    total_keys_sent[chunk] += my_send_size;
+  }
+
+  shmem_barrier_all();
+
+  /*
+   * We use the same array my_bucket_keys_sent for storing the 
+   * keys we would be sending to remote PE. Hence find the offset
+   * in my_bucket_keys_sent for each PE
+   */
+  long long int index_per_pe = 0;
+  for(int i=0; i<NUM_PES; i++) {
+    START_INDEX_PE_SENT_BUCKET(i) = index_per_pe;
+    for(int j=0; j<CHUNKS_PER_PE; j++) {
+      index_per_pe += total_keys_per_pe_per_chunk[i*CHUNKS_PER_PE + j];
+    }
+  }
+
+  /*
+   * We use the same array my_bucket_keys_received for storing the
+   * keys we are going to get from all the remote PEs. Hence,
+   * here we first calculate the starting offset for each PE
+   * in the receive buffer (my_bucket_keys_received)
+   */
+  index_per_pe = 0;
+  for(int i=0; i<NUM_PES; i++) {
+    starting_index_pe_receive_bucket[i] = index_per_pe;
+    for(int j=0; j<CHUNKS_PER_PE; j++) {
+      index_per_pe += total_keys_per_pe_per_chunk_alltoall[i][j];
+    }
+  }
+
+  /*
+   * The offset calculation we did above is currently only available
+   * to this PE. All the other remote PEs should also be aware of this
+   * as then only they can decide in which slot in my my_bucket_keys_received
+   * they do a put operation and at what index
+   */
+  for(int i=0; i<NUM_PES; i++) {
+    if(my_rank == i) {
+      memcpy(starting_index_pe_receive_bucket_alltoall[my_rank], starting_index_pe_receive_bucket, 
+             sizeof(long long int) * NUM_PES);
+    }
+    else {
+      shmem_longlong_put(starting_index_pe_receive_bucket_alltoall[my_rank], starting_index_pe_receive_bucket,
+             (long long int)NUM_PES, i);
+    }
+  }
+
+  shmem_barrier_all();
+
+  /*
+   * Calculate the starting index for each chunk (for each PE) in the 
+   * array my_bucket_keys_sent. We also keep track of the total number
+   * of keys we want to send to each chunk on remote PE
+   */
+  long long int keys_sent_currently_pe_chunk[NUM_PES][CHUNKS_PER_PE];
+  long long int fixed_starting_index_pe_chunk[NUM_PES][CHUNKS_PER_PE];
+
+  static long long int total_expected = 0;
+  static long long int total_num_keys = 0;
+  for(int i=0; i<NUM_PES; i++) {
+    memset(keys_sent_currently_pe_chunk[i], 0x00, sizeof(long long int) * CHUNKS_PER_PE);
+    memset(fixed_starting_index_pe_chunk[i], 0x00, sizeof(long long int) * CHUNKS_PER_PE);
+    long long int keys_in = 0, keys_out = 0;
+    for(int j=0; j<CHUNKS_PER_PE; j++) {
+      keys_in += total_keys_per_pe_per_chunk_alltoall[i][j];
+      fixed_starting_index_pe_chunk[i][j] = keys_out;
+      keys_out += total_keys_per_pe_per_chunk[(i * CHUNKS_PER_PE) + j];
+    }
+    total_expected += keys_in;
+  }
+  // Verify the final number of keys equals the initial number of keys
+  // This is just an error check and may be removed in the production version of this ISx
+  shmem_longlong_sum_to_all(&total_num_keys, &total_expected, 1, 0, 0, NUM_PES, llWrk, pSync);
+  shmem_barrier_all();
+  assert(total_num_keys == (long long int)(NUM_KEYS_PER_WORKERS * NUM_PES * CHUNKS_PER_PE));
+  total_expected = 0;
+  total_num_keys = 0;
+
+  unsigned int total_keys_sent_per_chunk[CHUNKS_PER_PE], total_keys_sent = 0;
+  memset(total_keys_sent_per_chunk, 0x00, CHUNKS_PER_PE*sizeof(int));
+
+  /*
+   * In this version of ISx each chunk is thought to be owned
+   * by a virtual PE. There are total of CHUNKS_PER_PE numbers of
+   * virtual PEs on each actual (or real) PEs.
+   *
+   * Each of these virtual PE would perform exchange with remote virtual PEs
+   * If we don't optimize this exchange then there would be total of 
+   * CHUNKS_PER_PE * NUM_PES * NUM_PES. This would be a severe bottleneck
+   * in this version of ISx. To avoid this issue we are doing optimized 
+   * communications. 
+   * We first copy of the keys the virtual PEs on this rank wants to 
+   * send to all the virtual PEs on any remote rank. We store that
+   * keys inside array my_bucket_keys_sent.
+   * Now, when the keys are copied, all the keys can be send using one put operation.
+   */
+  for(int chunk=0; chunk<CHUNKS_PER_PE; chunk++) {
+  const int v_my_rank = GET_VIRTUAL_RANK(my_rank, chunk);
+  for(uint64_t i = 0; i < NUM_PES*CHUNKS_PER_PE; ++i){
+    const int v_target_pe = (v_my_rank + i) % (NUM_PES*CHUNKS_PER_PE);
+    const int r_target_pe = GET_REAL_RANK(v_target_pe);
+    const int read_offset_from_self = send_offsets[chunk][v_target_pe];
+    const int my_send_size = local_bucket_sizes[chunk][v_target_pe];
+    const int min_v_rank_target_pe = GET_VIRTUAL_RANK(r_target_pe, 0);
+    const int chunk_r_target_pe = v_target_pe - min_v_rank_target_pe;
+    const long long int write_offset_into_target = fixed_starting_index_pe_chunk[r_target_pe][chunk_r_target_pe] +
+                                                     keys_sent_currently_pe_chunk[r_target_pe][chunk_r_target_pe];
+
+    const long long int max_key_pe_chunk = total_keys_per_pe_per_chunk[r_target_pe*CHUNKS_PER_PE + chunk_r_target_pe]; 
+    const long long int remaining_key_slots_left = max_key_pe_chunk - keys_sent_currently_pe_chunk[r_target_pe][chunk_r_target_pe];
+    assert(my_send_size <= remaining_key_slots_left);
+
+    keys_sent_currently_pe_chunk[r_target_pe][chunk_r_target_pe] += my_send_size;
+    memcpy(&(my_bucket_keys_sent[GET_INDEX_SENT_BUCKET(r_target_pe, write_offset_into_target)]),
+           &(my_local_bucketed_keys[chunk][read_offset_from_self]),
+           my_send_size * sizeof(KEY_TYPE));
+    total_keys_sent_per_chunk[chunk] += my_send_size;
+    total_keys_sent += my_send_size;
+
   } }
+
+  shmem_barrier_all();
+ 
+  /*
+   * Send the keys in the my_bucket_keys_sent array to the remote virtual PEs. We store all these
+   * keys at remote PEs in the array my_bucket_keys_received that is also partitioned for 
+   * each virtual PE and for each rank
+   */ 
+  for(uint64_t i = 0; i < NUM_PES; ++i){
+    long long int total_keys_to_send = 0;
+    for(int j=0; j<CHUNKS_PER_PE; j++) {
+      if(total_keys_per_pe_per_chunk[(i * CHUNKS_PER_PE) + j] == 0) continue;
+      total_keys_to_send += total_keys_per_pe_per_chunk[(i * CHUNKS_PER_PE) + j];
+      assert(keys_sent_currently_pe_chunk[i][j] == total_keys_per_pe_per_chunk[(i * CHUNKS_PER_PE) + j]);
+    }    
+    if(total_keys_to_send == 0) continue;
+    if(i == my_rank) {
+      memcpy(&(my_bucket_keys_received[GET_INDEX_RECEIVE_BUCKET(my_rank,my_rank,0)]), &(my_bucket_keys_sent[GET_INDEX_SENT_BUCKET(my_rank,0)]), (int) total_keys_to_send * sizeof(KEY_TYPE));
+    }
+    else {
+      shmem_int_put(&(my_bucket_keys_received[GET_INDEX_RECEIVE_BUCKET(i,my_rank,0)]), &(my_bucket_keys_sent[GET_INDEX_SENT_BUCKET(i,0)]), (int) total_keys_to_send, i);
+    }
+  }
+
+  shmem_barrier_all();
+
+  /*
+   * We have performed the key exchange with all the remote PEs and the result
+   * is currently stored in the array my_bucket_keys_received. Later code of
+   * this ISx would be using the array my_bucket_keys to use the keys resulting 
+   * from the global alltoall exchange. Hence, to support those code part, we 
+   * copy the keys we received in my_bucket_keys_received into the array
+   * my_bucket_keys.
+   * In future we can get rid of this extra my_bucket_keys_received and instead
+   * use only one receive buffer my_bucket_keys
+   */
+  long long int key_index_current[NUM_PES];
+  memset(key_index_current, 0x00, sizeof(long long int) * NUM_PES);
+  for(int chunk=0; chunk<CHUNKS_PER_PE; chunk++) {
+    for(uint64_t i = 0; i < NUM_PES; ++i){
+      long long int total_keys = total_keys_per_pe_per_chunk_alltoall[i][chunk];
+      if(total_keys == 0) continue;
+      memcpy(&(my_bucket_keys[chunk][receive_offset[chunk]]),
+             &(my_bucket_keys_received[GET_INDEX_RECEIVE_BUCKET(my_rank, i,key_index_current[i])]),
+             total_keys * sizeof(KEY_TYPE));
+      receive_offset[chunk] += total_keys;
+      key_index_current[i] += total_keys;
+    }
+  }
 
 #ifdef BARRIER_ATA
   shmem_barrier_all();
 #endif
-
   timer_stop(&timers[TIMER_ATA_KEYS]);
   timer_count(&timers[TIMER_ATA_KEYS], total_keys_sent);
 
@@ -776,7 +998,7 @@ static inline KEY_TYPE ** exchange_keys(int const ** restrict const send_offsets
     const int v_rank = GET_VIRTUAL_RANK(my_rank, chunk);
     char msg[1024];
     sprintf(msg,"V_Rank %d: Bucket Size %lld | Total Keys Sent: %u | Keys after exchange:",
-                            v_rank, receive_offset[chunk], total_keys_sent[chunk]);
+                            v_rank, receive_offset[chunk], total_keys_sent_per_chunk[chunk]);
     for(long long int i = 0; i < receive_offset[chunk]; ++i){
       if(i < PRINT_MAX)
       sprintf(msg + strlen(msg),"%d ", my_bucket_keys[chunk][i]);
@@ -1140,6 +1362,8 @@ static void print_timer_values(FILE * fp)
   }
 }
 
+double my_times[NUM_ITERATIONS];
+unsigned int my_counts[NUM_ITERATIONS];
 /* 
  * Aggregates the per PE timing information
  */ 
@@ -1147,16 +1371,10 @@ static double * gather_rank_times(_timer_t * const timer)
 {
   if(timer->seconds_iter > 0) {
 
-    assert(timer->seconds_iter == timer->num_iters);
-
+    assert(timer->seconds_iter == timer->num_iters && timer->seconds_iter == NUM_ITERATIONS);
     const unsigned int num_records = NUM_PES * timer->seconds_iter;
-#ifdef OPENSHMEM_COMPLIANT
-    double * my_times = shmem_malloc(timer->seconds_iter * sizeof(double));
-#else
-    double * my_times = shmalloc(timer->seconds_iter * sizeof(double));
-#endif
+    
     memcpy(my_times, timer->seconds, timer->seconds_iter * sizeof(double));
-
 #ifdef OPENSHMEM_COMPLIANT
     double * all_times = shmem_malloc( num_records * sizeof(double));
 #else
@@ -1164,15 +1382,8 @@ static double * gather_rank_times(_timer_t * const timer)
 #endif
 
     shmem_barrier_all();
-
     shmem_fcollect64(all_times, my_times, timer->seconds_iter, 0, 0, NUM_PES, pSync);
     shmem_barrier_all();
-
-#ifdef OPENSHMEM_COMPLIANT
-    shmem_free(my_times);
-#else
-    shfree(my_times);
-#endif
 
     return all_times;
   }
@@ -1189,11 +1400,6 @@ static unsigned int * gather_rank_counts(_timer_t * const timer)
   if(timer->count_iter > 0){
     const unsigned int num_records = NUM_PES * timer->num_iters;
 
-#ifdef OPENSHMEM_COMPLIANT
-    unsigned int * my_counts = shmem_malloc(timer->num_iters * sizeof(unsigned int));
-#else
-    unsigned int * my_counts = shmalloc(timer->num_iters * sizeof(unsigned int));
-#endif
     memcpy(my_counts, timer->count, timer->num_iters*sizeof(unsigned int));
 
 #ifdef OPENSHMEM_COMPLIANT
@@ -1201,18 +1407,11 @@ static unsigned int * gather_rank_counts(_timer_t * const timer)
 #else
     unsigned int * all_counts = shmalloc( num_records * sizeof(unsigned int) );
 #endif
-
     shmem_barrier_all();
 
     shmem_collect32(all_counts, my_counts, timer->num_iters, 0, 0, NUM_PES, pSync);
 
     shmem_barrier_all();
-
-#ifdef OPENSHMEM_COMPLIANT
-    shmem_free(my_counts);
-#else
-    shfree(my_counts);
-#endif
 
     return all_counts;
   }
