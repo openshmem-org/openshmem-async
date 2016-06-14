@@ -114,9 +114,6 @@ long long int* my_bucket_size;
  */
 #define KEY_BUFFER_SIZE_PER_PE ((int)(1uLL<<28uLL))
 
-// The receive array for the All2All exchange
-KEY_TYPE* my_bucket_keys[MAX_CHUNKS_ALLOWED];
-
 // used at sender PE to hold the number of keys its planning to 
 // exchange with each of the chunk at the remote PE
 long long int* total_keys_per_pe_per_chunk;
@@ -143,6 +140,14 @@ static KEY_TYPE* my_bucket_keys_received;
 static KEY_TYPE* my_bucket_keys_sent;
 #define START_INDEX_PE_SENT_BUCKET(pe)  starting_index_pe_sent_bucket[pe]
 #define GET_INDEX_SENT_BUCKET(pe, x)  (START_INDEX_PE_SENT_BUCKET(pe) + x)
+
+/*
+ * For easy access the received keys (after exchange operation), we store
+ * the keys in the array my_bucket_keys_sent (yes, the name of the variable is not supporting this).
+ * This macro simply gets the index of a key in a particular chunk.
+ * This macro is used only after exchanging the keys with remote PEs.
+ */
+#define RECEIVE_BUCKET_INDEX_IN_CHUNK(chunk, index) my_bucket_keys_sent[total_keys_per_pe_per_chunk[chunk] + index]
 
 #ifdef PERMUTE
 int * permute_array;
@@ -342,8 +347,6 @@ static int bucket_sort(void)
 
   receive_offset = (long long int*) shmem_malloc(sizeof(long long int) * CHUNKS_PER_PE);
   my_bucket_size = (long long int*) shmem_malloc(sizeof(long long int) * CHUNKS_PER_PE);
-  for(int i=0; i<CHUNKS_PER_PE; i++) my_bucket_keys[i] = (KEY_TYPE *) shmem_malloc(sizeof(KEY_TYPE) 
-                                                                  * ((int)(KEY_BUFFER_SIZE_PER_PE/CHUNKS_PER_PE)));
 
   starting_index_pe_sent_bucket = (long long int*) malloc(sizeof(long long int) * NUM_PES);
   starting_index_pe_receive_bucket = (long long int*) shmem_malloc(sizeof(long long int) * NUM_PES);
@@ -423,7 +426,6 @@ static int bucket_sort(void)
   shmem_free(starting_index_pe_receive_bucket_alltoall);
    shmem_free(starting_index_pe_receive_bucket);
   shmem_free(starting_index_pe_sent_bucket);
-  for(int k=0; k<CHUNKS_PER_PE; k++) shmem_free(my_bucket_keys[k]);
   shmem_free(my_bucket_size);
   shmem_free(receive_offset);
   shmem_free(my_bucket_keys_sent);
@@ -991,11 +993,30 @@ static inline KEY_TYPE ** exchange_keys(int const ** restrict const send_offsets
    */
   long long int key_index_current[NUM_PES];
   memset(key_index_current, 0x00, sizeof(long long int) * NUM_PES);
+  /*
+   * We would now use the starting CHUNKS_PER_PE indexes in the array total_keys_per_pe_per_chunk
+   * to store the starting index for the first key in the chunk in the received bucket keys.
+   * Hence, the index total_keys_per_pe_per_chunk[I] (where, I <CHUNKS_PER_PE) 
+   * represents the index to the first key in the chunk number I.
+   * This index is in the array my_bucket_keys_sent. We will now switch to this array
+   * to store the received keys 
+   */
+  memset(total_keys_per_pe_per_chunk, 0x00, sizeof(long long int) * NUM_PES * CHUNKS_PER_PE);
+  memset(my_bucket_keys_sent, 0x00, sizeof(KEY_TYPE) * KEY_BUFFER_SIZE_PER_PE);
+    
+  long long keys_index = 0;
+  for(int chunk=0; chunk<CHUNKS_PER_PE; chunk++) {
+    total_keys_per_pe_per_chunk[chunk] = keys_index;
+    for(uint64_t i = 0; i < NUM_PES; ++i){
+      keys_index += total_keys_per_pe_per_chunk_alltoall[i][chunk];
+    }
+  }
+
   for(int chunk=0; chunk<CHUNKS_PER_PE; chunk++) {
     for(uint64_t i = 0; i < NUM_PES; ++i){
       long long int total_keys = total_keys_per_pe_per_chunk_alltoall[i][chunk];
       if(total_keys == 0) continue;
-      memcpy(&(my_bucket_keys[chunk][receive_offset[chunk]]),
+      memcpy(&(RECEIVE_BUCKET_INDEX_IN_CHUNK(chunk, receive_offset[chunk])),
              &(my_bucket_keys_received[GET_INDEX_RECEIVE_BUCKET(my_rank, i,key_index_current[i])]),
              total_keys * sizeof(KEY_TYPE));
       receive_offset[chunk] += total_keys;
@@ -1018,7 +1039,7 @@ static inline KEY_TYPE ** exchange_keys(int const ** restrict const send_offsets
                             v_rank, receive_offset[chunk], total_keys_sent_per_chunk[chunk]);
     for(long long int i = 0; i < receive_offset[chunk]; ++i){
       if(i < PRINT_MAX)
-      sprintf(msg + strlen(msg),"%d ", my_bucket_keys[chunk][i]);
+      sprintf(msg + strlen(msg),"%d ", RECEIVE_BUCKET_INDEX_IN_CHUNK(chunk, i));
     }
     sprintf(msg + strlen(msg),"\n");
     printf("%s",msg);
@@ -1026,7 +1047,7 @@ static inline KEY_TYPE ** exchange_keys(int const ** restrict const send_offsets
   fflush(stdout);
   my_turn_complete();
 #endif
-  return my_bucket_keys;
+  return &my_bucket_keys_sent; // TODO remove this return as not required
 }
 
 #if defined(_SHMEM_WORKERS)
@@ -1037,7 +1058,7 @@ void count_local_keys_async(void* arg, int chunk) {
   const int v_rank = GET_VIRTUAL_RANK(my_rank, chunk);
   const int my_min_key = v_rank * BUCKET_WIDTH;
   int * restrict my_local_key_counts_1D = my_local_key_counts[chunk];
-  KEY_TYPE* my_bucket_keys_1D = my_bucket_keys[chunk];
+  KEY_TYPE* restrict my_bucket_keys_1D = &(RECEIVE_BUCKET_INDEX_IN_CHUNK(chunk, 0));
   // Count the occurences of each key in my bucket
   for(long long int i = 0; i < my_bucket_size[chunk]; ++i) {
     const unsigned int key_index = my_bucket_keys_1D[i] - my_min_key;
@@ -1084,7 +1105,7 @@ static inline int ** count_local_keys()
     const int v_rank = GET_VIRTUAL_RANK(my_rank, chunk);
     const int my_min_key = v_rank * BUCKET_WIDTH;
     int * restrict my_local_key_counts_1D = my_local_key_counts[chunk];
-    KEY_TYPE* my_bucket_keys_1D = my_bucket_keys[chunk];
+    KEY_TYPE* restrict my_bucket_keys_1D = &(RECEIVE_BUCKET_INDEX_IN_CHUNK(chunk, 0));
     // Count the occurences of each key in my bucket
     for(long long int i = 0; i < my_bucket_size[chunk]; ++i) {
       const unsigned int key_index = my_bucket_keys_1D[i] - my_min_key;
@@ -1132,7 +1153,7 @@ void verify_results_async(void* arg, int chunk) {
   const int v_rank = GET_VIRTUAL_RANK(my_rank, chunk);
   const int my_min_key = v_rank * BUCKET_WIDTH;
   const int my_max_key = (v_rank+1) * BUCKET_WIDTH - 1;
-  int * restrict my_bucket_keys_1D = my_bucket_keys[chunk];
+  KEY_TYPE* restrict my_bucket_keys_1D = &(RECEIVE_BUCKET_INDEX_IN_CHUNK(chunk, 0));
   // Verify all keys are within bucket boundaries
   for(long long int i = 0; i < my_bucket_size[chunk]; ++i){
     const int key = my_bucket_keys_1D[i];
@@ -1190,7 +1211,7 @@ static int verify_results(int const ** restrict const my_local_key_counts)
     const int v_rank = GET_VIRTUAL_RANK(my_rank, chunk);
     const int my_min_key = v_rank * BUCKET_WIDTH;
     const int my_max_key = (v_rank+1) * BUCKET_WIDTH - 1;
-    int * restrict my_bucket_keys_1D = my_bucket_keys[chunk];
+    KEY_TYPE* restrict my_bucket_keys_1D = &(RECEIVE_BUCKET_INDEX_IN_CHUNK(chunk, 0));
     // Verify all keys are within bucket boundaries
     for(long long int i = 0; i < my_bucket_size[chunk]; ++i){
       const int key = my_bucket_keys_1D[i];
