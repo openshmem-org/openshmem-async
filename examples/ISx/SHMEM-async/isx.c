@@ -436,10 +436,11 @@ static int bucket_sort(void)
 #if defined(_SHMEM_WORKERS)
 void make_input_async(void *args, int chunk) {
   KEY_TYPE ** restrict my_keys = *((KEY_TYPE *** restrict) args);
-
+  
+  KEY_TYPE* restrict my_keys_1D = my_keys[chunk];
   pcg32_random_t rng = seed_my_worker(chunk);
   for(uint64_t i = 0; i < NUM_KEYS_PER_WORKERS; ++i) {
-    my_keys[chunk][i] = pcg32_boundedrand_r(&rng, MAX_KEY_VAL);
+    my_keys_1D[i] = pcg32_boundedrand_r(&rng, MAX_KEY_VAL);
   }
 }
 #endif
@@ -474,8 +475,9 @@ static KEY_TYPE ** make_input(void)
   // parallel block
   for(chunk=0; chunk<CHUNKS_PER_PE; chunk++) {
     pcg32_random_t rng = seed_my_worker(chunk);
+    KEY_TYPE* restrict my_keys_1D = my_keys[chunk];
     for(uint64_t i = 0; i < NUM_KEYS_PER_WORKERS; ++i) {
-      my_keys[chunk][i] = pcg32_boundedrand_r(&rng, MAX_KEY_VAL);
+      my_keys_1D[i] = pcg32_boundedrand_r(&rng, MAX_KEY_VAL);
     }
   }
 #endif
@@ -512,11 +514,13 @@ void count_local_bucket_sizes_async(void* arg, int chunk) {
   count_local_bucket_sizes_t* args = (count_local_bucket_sizes_t*) arg;
   int ** restrict local_bucket_sizes = (*(args->local_bucket_sizes));
   KEY_TYPE ** const restrict const my_keys = args->my_keys;
+  KEY_TYPE* restrict my_keys_1D = my_keys[chunk];
+  int * restrict local_bucket_sizes_1D = local_bucket_sizes[chunk];
 
   init_array(local_bucket_sizes[chunk] , NUM_BUCKETS); // doing memset 0x00
   for(uint64_t i = 0; i < NUM_KEYS_PER_WORKERS; ++i){
-    const uint32_t bucket_index = my_keys[chunk][i]/BUCKET_WIDTH;
-    local_bucket_sizes[chunk][bucket_index]++;
+    const uint32_t bucket_index = my_keys_1D[i]/BUCKET_WIDTH;
+    local_bucket_sizes_1D[bucket_index]++;
   }
 }
 #endif
@@ -552,9 +556,11 @@ static inline int ** count_local_bucket_sizes(KEY_TYPE const ** restrict const m
 #endif
   for(chunk=0; chunk<CHUNKS_PER_PE; chunk++) {
     init_array(local_bucket_sizes[chunk] , NUM_BUCKETS); // doing memset 0x00
+    KEY_TYPE* restrict my_keys_1D = my_keys[chunk];
+    int * restrict local_bucket_sizes_1D = local_bucket_sizes[chunk];
     for(uint64_t i = 0; i < NUM_KEYS_PER_WORKERS; ++i){
-      const uint32_t bucket_index = my_keys[chunk][i]/BUCKET_WIDTH;
-      local_bucket_sizes[chunk][bucket_index]++;
+      const uint32_t bucket_index = my_keys_1D[i]/BUCKET_WIDTH;
+      local_bucket_sizes_1D[bucket_index]++;
     }
   }
 #endif
@@ -595,14 +601,17 @@ void compute_local_bucket_offsets_async(void *arg, int chunk) {
   int **restrict local_bucket_offsets = *(args->local_bucket_offsets);
   int const ** restrict const local_bucket_sizes = args->local_bucket_sizes;
   int *** restrict send_offsets = args->send_offsets;
+  int * restrict send_offsets_1D = (*send_offsets)[chunk];
 
   local_bucket_offsets[chunk][0] = 0;
   (*send_offsets)[chunk][0] = 0;
   int temp = 0;
+  int * restrict local_bucket_offsets_1D = local_bucket_offsets[chunk];
+  int * restrict local_bucket_sizes_1D = local_bucket_sizes[chunk];
   for(uint64_t i = 1; i < NUM_BUCKETS; i++){
-    temp = local_bucket_offsets[chunk][i-1] + local_bucket_sizes[chunk][i-1];
-    local_bucket_offsets[chunk][i] = temp;
-    (*send_offsets)[chunk][i] = temp;
+    temp = local_bucket_offsets_1D[i-1] + local_bucket_sizes_1D[i-1];
+    local_bucket_offsets_1D[i] = temp;
+    send_offsets_1D[i] = temp;
   } 
 }
 #endif
@@ -645,10 +654,12 @@ static inline int ** compute_local_bucket_offsets(int const ** restrict const lo
     local_bucket_offsets[chunk][0] = 0;
     (*send_offsets)[chunk][0] = 0;
     int temp = 0;
+    int * restrict local_bucket_offsets_1D = local_bucket_offsets[chunk];
+    int * restrict local_bucket_sizes_1D = local_bucket_sizes[chunk];
     for(uint64_t i = 1; i < NUM_BUCKETS; i++){
-      temp = local_bucket_offsets[chunk][i-1] + local_bucket_sizes[chunk][i-1];
-      local_bucket_offsets[chunk][i] = temp;
-      (*send_offsets)[chunk][i] = temp;
+      temp = local_bucket_offsets_1D[i-1] + local_bucket_sizes_1D[i-1];
+      local_bucket_offsets_1D[i] = temp;
+      send_offsets_1D[i] = temp;
     } 
   }
 #endif
@@ -688,14 +699,17 @@ void bucketize_local_keys_async(void* arg, int chunk) {
   KEY_TYPE const ** restrict const my_keys = args->my_keys;
   int ** restrict const local_bucket_offsets = args->local_bucket_offsets;
 
+  KEY_TYPE * restrict my_keys_1D = my_keys[chunk];
+  int * restrict local_bucket_offsets_1D = local_bucket_offsets[chunk];
+  KEY_TYPE * restrict my_local_bucketed_keys_1D = my_local_bucketed_keys[chunk];
   for(uint64_t i = 0; i < NUM_KEYS_PER_WORKERS; ++i){
-    const KEY_TYPE key = my_keys[chunk][i];
+    const KEY_TYPE key = my_keys_1D[i];
     const uint32_t bucket_index = key / BUCKET_WIDTH; 
     uint32_t index;
-    assert(local_bucket_offsets[chunk][bucket_index] >= 0);
-    index = local_bucket_offsets[chunk][bucket_index]++;
+    assert(local_bucket_offsets_1D[bucket_index] >= 0);
+    index = local_bucket_offsets_1D[bucket_index]++;
     assert(index < NUM_KEYS_PER_WORKERS);
-    my_local_bucketed_keys[chunk][index] = key;
+    my_local_bucketed_keys_1D[index] = key;
   }
 }
 #endif
@@ -731,14 +745,17 @@ static inline KEY_TYPE ** bucketize_local_keys(KEY_TYPE const ** restrict const 
 #pragma omp parallel for private(chunk) schedule (dynamic,1) 
 #endif
   for(chunk=0; chunk<CHUNKS_PER_PE; chunk++) {
+    KEY_TYPE * restrict my_keys_1D = my_keys[chunk];
+    int * restrict local_bucket_offsets_1D = local_bucket_offsets[chunk];
+    KEY_TYPE * restrict my_local_bucketed_keys_1D = my_local_bucketed_keys[chunk];
     for(uint64_t i = 0; i < NUM_KEYS_PER_WORKERS; ++i){
-      const KEY_TYPE key = my_keys[chunk][i];
-      const uint32_t bucket_index = key / BUCKET_WIDTH; 
+      const KEY_TYPE key = my_keys_1D[i];
+      const uint32_t bucket_index = key / BUCKET_WIDTH;
       uint32_t index;
-      assert(local_bucket_offsets[chunk][bucket_index] >= 0);
-      index = local_bucket_offsets[chunk][bucket_index]++;
+      assert(local_bucket_offsets_1D[bucket_index] >= 0);
+      index = local_bucket_offsets_1D[bucket_index]++;
       assert(index < NUM_KEYS_PER_WORKERS);
-      my_local_bucketed_keys[chunk][index] = key;
+      my_local_bucketed_keys_1D[index] = key;
     }
   }
 #endif
@@ -1019,12 +1036,14 @@ void count_local_keys_async(void* arg, int chunk) {
   const int my_rank = shmem_my_pe();
   const int v_rank = GET_VIRTUAL_RANK(my_rank, chunk);
   const int my_min_key = v_rank * BUCKET_WIDTH;
+  int * restrict my_local_key_counts_1D = my_local_key_counts[chunk];
+  KEY_TYPE* my_bucket_keys_1D = my_bucket_keys[chunk];
   // Count the occurences of each key in my bucket
   for(long long int i = 0; i < my_bucket_size[chunk]; ++i) {
-    const unsigned int key_index = my_bucket_keys[chunk][i] - my_min_key;
-    assert(my_bucket_keys[chunk][i] >= my_min_key);
+    const unsigned int key_index = my_bucket_keys_1D[i] - my_min_key;
+    assert(my_bucket_keys_1D[i] >= my_min_key);
     assert(key_index < BUCKET_WIDTH);
-    my_local_key_counts[chunk][key_index]++;
+    my_local_key_counts_1D[key_index]++;
   }   
 }
 #endif
@@ -1064,13 +1083,15 @@ static inline int ** count_local_keys()
   for(chunk=0; chunk<CHUNKS_PER_PE; chunk++) {
     const int v_rank = GET_VIRTUAL_RANK(my_rank, chunk);
     const int my_min_key = v_rank * BUCKET_WIDTH;
+    int * restrict my_local_key_counts_1D = my_local_key_counts[chunk];
+    KEY_TYPE* my_bucket_keys_1D = my_bucket_keys[chunk];
     // Count the occurences of each key in my bucket
     for(long long int i = 0; i < my_bucket_size[chunk]; ++i) {
-      const unsigned int key_index = my_bucket_keys[chunk][i] - my_min_key;
-      assert(my_bucket_keys[chunk][i] >= my_min_key);
+      const unsigned int key_index = my_bucket_keys_1D[i] - my_min_key;
+      assert(my_bucket_keys_1D[i] >= my_min_key);
       assert(key_index < BUCKET_WIDTH);
-      my_local_key_counts[chunk][key_index]++;
-    }   
+      my_local_key_counts_1D[key_index]++;
+    }
   }
 #endif
 
@@ -1111,9 +1132,10 @@ void verify_results_async(void* arg, int chunk) {
   const int v_rank = GET_VIRTUAL_RANK(my_rank, chunk);
   const int my_min_key = v_rank * BUCKET_WIDTH;
   const int my_max_key = (v_rank+1) * BUCKET_WIDTH - 1;
+  int * restrict my_bucket_keys_1D = my_bucket_keys[chunk];
   // Verify all keys are within bucket boundaries
   for(long long int i = 0; i < my_bucket_size[chunk]; ++i){
-    const int key = my_bucket_keys[chunk][i];
+    const int key = my_bucket_keys_1D[i];
     if((key < my_min_key) || (key > my_max_key)){
       printf("Rank %d Failed Verification!\n",v_rank);
       printf("Key: %d is outside of bounds [%d, %d]\n", key, my_min_key, my_max_key);
@@ -1122,8 +1144,9 @@ void verify_results_async(void* arg, int chunk) {
   }
   // Verify the sum of the key population equals the expected bucket size
   long long int bucket_size_test = 0;
+  int * restrict my_local_key_counts_1D = my_local_key_counts[chunk];
   for(uint64_t i = 0; i < BUCKET_WIDTH; ++i){
-    bucket_size_test +=  my_local_key_counts[chunk][i];
+    bucket_size_test +=  my_local_key_counts_1D[i];
   }
   if(bucket_size_test != my_bucket_size[chunk]){
     printf("Rank %d Failed Verification!\n",v_rank);
@@ -1167,9 +1190,10 @@ static int verify_results(int const ** restrict const my_local_key_counts)
     const int v_rank = GET_VIRTUAL_RANK(my_rank, chunk);
     const int my_min_key = v_rank * BUCKET_WIDTH;
     const int my_max_key = (v_rank+1) * BUCKET_WIDTH - 1;
+    int * restrict my_bucket_keys_1D = my_bucket_keys[chunk];
     // Verify all keys are within bucket boundaries
     for(long long int i = 0; i < my_bucket_size[chunk]; ++i){
-      const int key = my_bucket_keys[chunk][i];
+      const int key = my_bucket_keys_1D[i];
       if((key < my_min_key) || (key > my_max_key)){
         printf("Rank %d Failed Verification!\n",v_rank);
         printf("Key: %d is outside of bounds [%d, %d]\n", key, my_min_key, my_max_key);
@@ -1178,8 +1202,9 @@ static int verify_results(int const ** restrict const my_local_key_counts)
     }
     // Verify the sum of the key population equals the expected bucket size
     long long int bucket_size_test = 0;
+    int * restrict my_local_key_counts_1D = my_local_key_counts[chunk];
     for(uint64_t i = 0; i < BUCKET_WIDTH; ++i){
-      bucket_size_test +=  my_local_key_counts[chunk][i];
+      bucket_size_test +=  my_local_key_counts_1D[i];
     }
     if(bucket_size_test != my_bucket_size[chunk]){
       printf("Rank %d Failed Verification!\n",v_rank);
