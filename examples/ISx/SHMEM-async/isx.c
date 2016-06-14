@@ -42,6 +42,7 @@ POSSIBILITY OF SUCH DAMAGE.
 #include "params.h"
 #include "isx.h"
 #include "timer.h"
+#include "pthread.h"
 #include "pcg_basic.h"
 
 #if defined(_OPENMP)
@@ -784,6 +785,106 @@ static inline KEY_TYPE ** bucketize_local_keys(KEY_TYPE const ** restrict const 
   return my_local_bucketed_keys;
 }
 
+#if defined(_SHMEM_WORKERS)
+pthread_mutex_t *mymutex = NULL;
+long long int** keys_sent_currently_pe_chunk = NULL;
+long long int** fixed_starting_index_pe_chunk = NULL;
+unsigned int * total_keys_sent_per_chunk = NULL;
+long long int* key_index_current = NULL;
+
+typedef struct copy_into_sent_bucket_t {
+  int const ** restrict const local_bucket_sizes;
+  int const ** restrict const send_offsets;
+  KEY_TYPE const ** restrict const my_local_bucketed_keys;
+} copy_into_sent_bucket_t;
+
+void copy_into_sent_bucket(void * args, int chunk) {
+  copy_into_sent_bucket_t * arg = (copy_into_sent_bucket_t*) args;
+  int const ** restrict const  send_offsets = arg->send_offsets;
+  int const ** restrict const local_bucket_sizes = arg->local_bucket_sizes;
+  KEY_TYPE const ** restrict const my_local_bucketed_keys = arg->my_local_bucketed_keys;
+
+  const int my_rank = shmem_my_pe();
+  const int v_my_rank = GET_VIRTUAL_RANK(my_rank, chunk);
+  for(uint64_t i = 0; i < NUM_PES*CHUNKS_PER_PE; ++i){
+    const int v_target_pe = (v_my_rank + i) % (NUM_PES*CHUNKS_PER_PE);
+    const int r_target_pe = GET_REAL_RANK(v_target_pe);
+    const int read_offset_from_self = send_offsets[chunk][v_target_pe];
+    const int my_send_size = local_bucket_sizes[chunk][v_target_pe];
+    const int min_v_rank_target_pe = GET_VIRTUAL_RANK(r_target_pe, 0);
+    const int chunk_r_target_pe = v_target_pe - min_v_rank_target_pe;
+    long long int keys_sent_currently_pe_chunk_current;
+
+    // critical section -- 2 lines
+    const int index = r_target_pe*CHUNKS_PER_PE + chunk_r_target_pe;
+    pthread_mutex_lock(&(mymutex[index]));
+    keys_sent_currently_pe_chunk_current = keys_sent_currently_pe_chunk[r_target_pe][chunk_r_target_pe];
+    keys_sent_currently_pe_chunk[r_target_pe][chunk_r_target_pe] += my_send_size;
+    pthread_mutex_unlock(&(mymutex[index]));
+
+    const long long int write_offset_into_target = fixed_starting_index_pe_chunk[r_target_pe][chunk_r_target_pe] +
+                                                     keys_sent_currently_pe_chunk_current;
+
+    const long long int max_key_pe_chunk = total_keys_per_pe_per_chunk[r_target_pe*CHUNKS_PER_PE + chunk_r_target_pe];
+    const long long int remaining_key_slots_left = max_key_pe_chunk - keys_sent_currently_pe_chunk_current;
+    assert(my_send_size <= remaining_key_slots_left);
+
+    memcpy(&(my_bucket_keys_sent[GET_INDEX_SENT_BUCKET(r_target_pe, write_offset_into_target)]),
+           &(my_local_bucketed_keys[chunk][read_offset_from_self]),
+           my_send_size * sizeof(KEY_TYPE));
+    total_keys_sent_per_chunk[chunk] += my_send_size;
+  }
+}
+
+void calculate_num_keys_tosend(void* args, int chunk) {
+  copy_into_sent_bucket_t * arg = (copy_into_sent_bucket_t*) args;
+  int const ** restrict const  send_offsets = arg->send_offsets;
+  int const ** restrict const local_bucket_sizes = arg->local_bucket_sizes;
+  const int my_rank = shmem_my_pe();
+  const int v_my_rank = GET_VIRTUAL_RANK(my_rank, chunk);
+  for(uint64_t i = 0; i < NUM_PES*CHUNKS_PER_PE; ++i){
+#ifdef PERMUTE
+    const int target_pe = permute_array[i];
+    assert("Not implemented for CHUNKS_PER_PE" && 0);
+#elif INCAST
+    const int target_pe = i;
+    assert("Not implemented for CHUNKS_PER_PE" && 0);
+#else
+    const int v_target_pe = (v_my_rank + i) % (NUM_PES*CHUNKS_PER_PE);
+#endif
+    const int r_target_pe = GET_REAL_RANK(v_target_pe);
+    const int read_offset_from_self = send_offsets[chunk][v_target_pe];
+    const int my_send_size = local_bucket_sizes[chunk][v_target_pe];
+    const int min_v_rank_target_pe = GET_VIRTUAL_RANK(r_target_pe, 0);
+    const int chunk_r_target_pe = v_target_pe - min_v_rank_target_pe;
+    const int index = r_target_pe*CHUNKS_PER_PE + chunk_r_target_pe;
+    pthread_mutex_lock(&(mymutex[index]));
+    // critical section -- 1 line
+    total_keys_per_pe_per_chunk[index] += my_send_size;
+    pthread_mutex_unlock(&(mymutex[index]));
+  }
+}
+
+void organize_keys_from_receive_bucket(void* args, int chunk) {
+  const int my_rank = shmem_my_pe();
+  for(uint64_t i = 0; i < NUM_PES; ++i){
+    long long int total_keys = total_keys_per_pe_per_chunk_alltoall[i][chunk];
+    if(total_keys == 0) continue;
+
+    pthread_mutex_lock(&(mymutex[i]));
+    // critical section -- 2 lines
+    long long int read_offset = key_index_current[i];
+    key_index_current[i] += total_keys;
+    pthread_mutex_unlock(&(mymutex[i]));
+      
+    memcpy(&(RECEIVE_BUCKET_INDEX_IN_CHUNK(chunk, receive_offset[chunk])),
+           &(my_bucket_keys_received[GET_INDEX_RECEIVE_BUCKET(my_rank, i,read_offset)]),
+           total_keys * sizeof(KEY_TYPE));
+    receive_offset[chunk] += total_keys;
+  }
+}
+#endif
+ 
 /*
  * Each PE sends the contents of its local buckets to the PE that owns that bucket.
  */
@@ -792,14 +893,48 @@ static inline KEY_TYPE ** exchange_keys(int const ** restrict const send_offsets
                                        KEY_TYPE const ** restrict const my_local_bucketed_keys)
 {
   timer_start(&timers[TIMER_ATA_KEYS]);
-
+  
   const int my_rank = shmem_my_pe();
+
+  /*
+   * These variables are used only in this exchange function and allocated only once.
+   * This is during the first iteration only.
+   */
+  if(keys_sent_currently_pe_chunk == NULL) {
+    keys_sent_currently_pe_chunk = (long long int**) malloc(sizeof(long long int*) * NUM_PES);
+    fixed_starting_index_pe_chunk = (long long int**) malloc(sizeof(long long int*) * NUM_PES);
+    total_keys_sent_per_chunk = (unsigned int*) malloc(sizeof(unsigned int) * CHUNKS_PER_PE);
+    mymutex = (pthread_mutex_t*) malloc(sizeof(pthread_mutex_t) * NUM_PES * CHUNKS_PER_PE);
+    key_index_current = (long long int*) malloc(sizeof(long long int) * NUM_PES);
+    for(int i=0; i<NUM_PES; i++) {
+      keys_sent_currently_pe_chunk[i] = (long long int*) malloc(sizeof(long long int) * CHUNKS_PER_PE);
+      fixed_starting_index_pe_chunk[i] = (long long int*) malloc(sizeof(long long int) * CHUNKS_PER_PE);
+    }
+    for(int i=0; i<NUM_PES*CHUNKS_PER_PE; i++) {
+      pthread_mutex_init(&(mymutex[i]), NULL);
+    }
+  }
 
   /*
    * We first calculate the number of keys we would be sending to
    * each of the chunks in all the remote PEs. 
    */
-  for(int chunk=0; chunk<CHUNKS_PER_PE; chunk++) {
+#if defined(_SHMEM_WORKERS)
+  copy_into_sent_bucket_t args = { local_bucket_sizes, send_offsets, my_local_bucketed_keys };
+  int lowBound = 0;
+  int highBound = CHUNKS_PER_PE;
+  int stride = 1;
+  int tile_size = 1;
+  int loop_dimension = 1;
+  shmem_task_scope_begin();
+  shmem_parallel_for_nbi(calculate_num_keys_tosend, (void*)(&args), NULL, lowBound, highBound, stride, tile_size, loop_dimension, PARALLEL_FOR_MODE);
+  shmem_task_scope_end();
+#else
+#if defined(_OPENMP)
+int chunk;
+#pragma omp parallel for private(chunk) schedule (dynamic,1) 
+#endif
+  for(chunk=0; chunk<CHUNKS_PER_PE; chunk++) {
   const int v_my_rank = GET_VIRTUAL_RANK(my_rank, chunk);
   for(uint64_t i = 0; i < NUM_PES*CHUNKS_PER_PE; ++i){
 #ifdef PERMUTE
@@ -817,7 +952,9 @@ static inline KEY_TYPE ** exchange_keys(int const ** restrict const send_offsets
     const int min_v_rank_target_pe = GET_VIRTUAL_RANK(r_target_pe, 0);
     const int chunk_r_target_pe = v_target_pe - min_v_rank_target_pe;
     total_keys_per_pe_per_chunk[(r_target_pe * CHUNKS_PER_PE) + chunk_r_target_pe] += my_send_size;
-  }} 
+  }
+  } 
+#endif
 
   /*
    * We should inform the remote PEs about the number 
@@ -889,9 +1026,6 @@ static inline KEY_TYPE ** exchange_keys(int const ** restrict const send_offsets
    * array my_bucket_keys_sent. We also keep track of the total number
    * of keys we want to send to each chunk on remote PE
    */
-  long long int keys_sent_currently_pe_chunk[NUM_PES][CHUNKS_PER_PE];
-  long long int fixed_starting_index_pe_chunk[NUM_PES][CHUNKS_PER_PE];
-
   static long long int total_expected = 0;
   static long long int total_num_keys = 0;
   for(int i=0; i<NUM_PES; i++) {
@@ -905,16 +1039,19 @@ static inline KEY_TYPE ** exchange_keys(int const ** restrict const send_offsets
     }
     total_expected += keys_in;
   }
+
+#ifdef DEBUG
   // Verify the final number of keys equals the initial number of keys
   // This is just an error check and may be removed in the production version of this ISx
   shmem_longlong_sum_to_all(&total_num_keys, &total_expected, 1, 0, 0, NUM_PES, llWrk, pSync);
   shmem_barrier_all();
   assert(total_num_keys == (long long int)(NUM_KEYS_PER_WORKERS * NUM_PES * CHUNKS_PER_PE));
+#endif
   total_expected = 0;
   total_num_keys = 0;
 
-  unsigned int total_keys_sent_per_chunk[CHUNKS_PER_PE], total_keys_sent = 0;
-  memset(total_keys_sent_per_chunk, 0x00, CHUNKS_PER_PE*sizeof(int));
+  unsigned int total_keys_sent = 0;
+  memset(total_keys_sent_per_chunk, 0x00, CHUNKS_PER_PE*sizeof(unsigned int));
 
   /*
    * In this version of ISx each chunk is thought to be owned
@@ -931,7 +1068,16 @@ static inline KEY_TYPE ** exchange_keys(int const ** restrict const send_offsets
    * keys inside array my_bucket_keys_sent.
    * Now, when the keys are copied, all the keys can be send using one put operation.
    */
-  for(int chunk=0; chunk<CHUNKS_PER_PE; chunk++) {
+#if defined(_SHMEM_WORKERS)
+  //copy_into_sent_bucket_t args = { local_bucket_sizes, send_offsets, my_local_bucketed_keys };
+  shmem_task_scope_begin();
+  shmem_parallel_for_nbi(copy_into_sent_bucket , (void*)(&args), NULL, lowBound, highBound, stride, tile_size, loop_dimension, PARALLEL_FOR_MODE);
+  shmem_task_scope_end();
+#else
+#if defined(_OPENMP)
+int chunk;
+#pragma omp parallel for private(chunk) schedule (dynamic,1) 
+#endif
   const int v_my_rank = GET_VIRTUAL_RANK(my_rank, chunk);
   for(uint64_t i = 0; i < NUM_PES*CHUNKS_PER_PE; ++i){
     const int v_target_pe = (v_my_rank + i) % (NUM_PES*CHUNKS_PER_PE);
@@ -940,22 +1086,30 @@ static inline KEY_TYPE ** exchange_keys(int const ** restrict const send_offsets
     const int my_send_size = local_bucket_sizes[chunk][v_target_pe];
     const int min_v_rank_target_pe = GET_VIRTUAL_RANK(r_target_pe, 0);
     const int chunk_r_target_pe = v_target_pe - min_v_rank_target_pe;
-    const long long int write_offset_into_target = fixed_starting_index_pe_chunk[r_target_pe][chunk_r_target_pe] +
-                                                     keys_sent_currently_pe_chunk[r_target_pe][chunk_r_target_pe];
+    long long int keys_sent_currently_pe_chunk_current;
 
-    const long long int max_key_pe_chunk = total_keys_per_pe_per_chunk[r_target_pe*CHUNKS_PER_PE + chunk_r_target_pe]; 
-    const long long int remaining_key_slots_left = max_key_pe_chunk - keys_sent_currently_pe_chunk[r_target_pe][chunk_r_target_pe];
+    // critical section -- 2 lines
+    #pragma omp critical
+    {
+    keys_sent_currently_pe_chunk_current = keys_sent_currently_pe_chunk[r_target_pe][chunk_r_target_pe];
+    keys_sent_currently_pe_chunk[r_target_pe][chunk_r_target_pe] += my_send_size;
+    }
+
+    const long long int write_offset_into_target = fixed_starting_index_pe_chunk[r_target_pe][chunk_r_target_pe] +
+                                                     keys_sent_currently_pe_chunk_current;
+
+    const long long int max_key_pe_chunk = total_keys_per_pe_per_chunk[r_target_pe*CHUNKS_PER_PE + chunk_r_target_pe];
+    const long long int remaining_key_slots_left = max_key_pe_chunk - keys_sent_currently_pe_chunk_current;
     assert(my_send_size <= remaining_key_slots_left);
 
-    keys_sent_currently_pe_chunk[r_target_pe][chunk_r_target_pe] += my_send_size;
     memcpy(&(my_bucket_keys_sent[GET_INDEX_SENT_BUCKET(r_target_pe, write_offset_into_target)]),
            &(my_local_bucketed_keys[chunk][read_offset_from_self]),
            my_send_size * sizeof(KEY_TYPE));
     total_keys_sent_per_chunk[chunk] += my_send_size;
-    total_keys_sent += my_send_size;
-
-  } }
-
+  }
+  }
+#endif
+  for(int chunk=0; chunk<CHUNKS_PER_PE; chunk++) total_keys_sent += total_keys_sent_per_chunk[chunk];
   shmem_barrier_all();
  
   /*
@@ -991,7 +1145,6 @@ static inline KEY_TYPE ** exchange_keys(int const ** restrict const send_offsets
    * In future we can get rid of this extra my_bucket_keys_received and instead
    * use only one receive buffer my_bucket_keys
    */
-  long long int key_index_current[NUM_PES];
   memset(key_index_current, 0x00, sizeof(long long int) * NUM_PES);
   /*
    * We would now use the starting CHUNKS_PER_PE indexes in the array total_keys_per_pe_per_chunk
@@ -1012,17 +1165,36 @@ static inline KEY_TYPE ** exchange_keys(int const ** restrict const send_offsets
     }
   }
 
+/*
+#if defined(_SHMEM_WORKERS)
+  //copy_into_sent_bucket_t args = { local_bucket_sizes, send_offsets, my_local_bucketed_keys };
+  shmem_task_scope_begin();
+  shmem_parallel_for_nbi(organize_keys_from_receive_bucket, NULL, NULL, lowBound, highBound, stride, tile_size, loop_dimension, PARALLEL_FOR_MODE);
+  shmem_task_scope_end();
+#else
+#if defined(_OPENMP)
+int chunk;
+#pragma omp parallel for private(chunk) schedule (dynamic,1) 
+#endif
+*/
   for(int chunk=0; chunk<CHUNKS_PER_PE; chunk++) {
     for(uint64_t i = 0; i < NUM_PES; ++i){
       long long int total_keys = total_keys_per_pe_per_chunk_alltoall[i][chunk];
       if(total_keys == 0) continue;
+
+      // critical section -- 2 lines
+      long long int read_offset = key_index_current[i];
+      key_index_current[i] += total_keys;
+      
       memcpy(&(RECEIVE_BUCKET_INDEX_IN_CHUNK(chunk, receive_offset[chunk])),
-             &(my_bucket_keys_received[GET_INDEX_RECEIVE_BUCKET(my_rank, i,key_index_current[i])]),
+             &(my_bucket_keys_received[GET_INDEX_RECEIVE_BUCKET(my_rank, i,read_offset)]),
              total_keys * sizeof(KEY_TYPE));
       receive_offset[chunk] += total_keys;
-      key_index_current[i] += total_keys;
     }
   }
+/*
+#endif
+*/
 
 #ifdef BARRIER_ATA
   shmem_barrier_all();
