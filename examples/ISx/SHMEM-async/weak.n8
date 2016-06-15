@@ -3,12 +3,12 @@
 #PBS -N pbbs
 #PBS -j oe
 #PBS -q debug
-#PBS -l walltime=00:06:00,nodes=8
+#PBS -l walltime=00:03:00,nodes=8
 #PBS -V
 
 export ISX_PE_CHUNKS=512
-ITER=1
-HCLIB=3	# 0=HCLIB_ONLY; 1=OMP_ONLY; 2=SHMEM_ONLY; 3=ALL
+ITER=8
+HCLIB=4	# 0=HCLIB_ONLY; 1=OMP_ONLY; 2=SHMEM_ONLY; 3=ALL; 4=HCLIB and SHMEM
 SHMEM_ASYNC_EXE="./ashmem/isx.weak"
 SHMEM_OMP_EXE="./omp/isx.weak"
 SHMEM_EXE="../SHMEM/bin/isx.weak"
@@ -44,7 +44,7 @@ while [ $runID -lt ${ITER} ]; do
     elif [ ${HCLIB} -eq 2 ]; then
       rm ${LOGNAME}
       LOGFILE="${LOGDIR}/${PREFIX}.SHMEM.cores-${TOTAL_CORES}.log"
-      aprun -n ${TOTAL_CORES} -d 1 ${SHMEM_EXE} ${BENCH_OPTION} >& "${LOGNAME}"
+      aprun -n ${TOTAL_CORES} -d 1 -N 16 -S 8 ${SHMEM_EXE} ${BENCH_OPTION} >& "${LOGNAME}"
       cat "${LOGNAME}" | sed '/resources: utime/d' >> "${LOGFILE}"
     elif [ ${HCLIB} -eq 3 ]; then
       # First hclib
@@ -66,7 +66,22 @@ while [ $runID -lt ${ITER} ]; do
       #now SHMEM
       rm ${LOGNAME}
       LOGFILE="${LOGDIR}/${PREFIX}.SHMEM.cores-${TOTAL_CORES}.log"
-      aprun -n ${TOTAL_CORES} -d 1 ${SHMEM_EXE} ${BENCH_OPTION} >& "${LOGNAME}"
+      aprun -n ${TOTAL_CORES} -d 1 -N 16 -S 8 ${SHMEM_EXE} ${BENCH_OPTION} >& "${LOGNAME}"
+      cat "${LOGNAME}" | sed '/resources: utime/d' >> "${LOGFILE}"
+    elif [ ${HCLIB} -eq 4 ]; then
+      # First hclib
+      rm ${LOGNAME}
+      export HCLIB_WORKERS=${workers}
+      LOGFILE="${LOGDIR}/${PREFIX}.SHMEM.hclib-${workers}.cores-${TOTAL_CORES}.log"
+      aprun -n ${SHM_TASK} -S 1 -d ${workers} ${SHMEM_ASYNC_EXE} ${BENCH_OPTION} >& "${LOGNAME}"
+      cat "${LOGNAME}" | sed '/resources: utime/d' > "${LOGNAME}.t1"
+      cat "${LOGNAME}.t1" | sed '/WARNING: Running without a provided HCLIB_HPT_FILE/d' >> "${LOGFILE}"
+      rm "${LOGNAME}.t1"
+
+      #now SHMEM
+      rm ${LOGNAME}
+      LOGFILE="${LOGDIR}/${PREFIX}.SHMEM.cores-${TOTAL_CORES}.log"
+      aprun -n ${TOTAL_CORES} -d 1 -N 16 -S 8 ${SHMEM_EXE} ${BENCH_OPTION} >& "${LOGNAME}"
       cat "${LOGNAME}" | sed '/resources: utime/d' >> "${LOGFILE}"
     else
       echo "ERROR: Value of Variable HCLIB=${HCLIB} unsupported"

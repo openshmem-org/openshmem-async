@@ -1,0 +1,52 @@
+#!/bin/bash
+#PBS -A csc205
+#PBS -N pbbs
+#PBS -j oe
+#PBS -q debug
+#PBS -l walltime=00:04:00,nodes=16
+#PBS -V
+
+export NODES=16
+
+CHUNKS=( 128 256 512 )
+ITER=4
+SHMEM_ASYNC_EXE="./ashmem/isx.weak"
+export PREFIX="ISxWeak.3096.1024"
+BENCH_OPTION="8388608 /tmp/del.$$"
+
+#############
+
+cd $PBS_O_WORKDIR
+LOGDIR="/ccs/proj/csc205/logs/isx"
+export  LD_PRELOAD=/lustre/atlas/sw/tbb/43/sles11.3_gnu4.8.2/source/build/linux_intel64_gcc_cc4.8.2_libc2.11.3_kernel3.0.101_release/libtbbmalloc_proxy.so.2
+
+TOTAL_CORES=`expr $NODES \* 16`
+runID=0
+LOGNAME=`mktemp -p ${LOGDIR}`
+while [ $runID -lt ${ITER} ]; do
+    for chunks in "${CHUNKS[@]}"; do
+    export ISX_PE_CHUNKS=${chunks}
+
+    rm ${LOGNAME}
+    workers=8
+    SHM_TASK=`expr $NODES \* 2`
+    export HCLIB_WORKERS=${workers} 
+    LOGFILE="${LOGDIR}/${PREFIX}.SHMEM.hclib-${workers}.cores-${TOTAL_CORES}.log.chunk-${ISX_PE_CHUNKS}"
+    aprun -n ${SHM_TASK} -N 2 -S 1 -d ${workers} ${SHMEM_ASYNC_EXE} ${BENCH_OPTION} >& "${LOGNAME}"
+    cat "${LOGNAME}" | sed '/resources: utime/d' > "${LOGNAME}.t1"
+    cat "${LOGNAME}.t1" | sed '/WARNING: Running without a provided HCLIB_HPT_FILE/d' >> "${LOGFILE}"
+    rm "${LOGNAME}.t1"
+
+    rm ${LOGNAME}
+    workers=16
+    SHM_TASK=$NODES
+    export HCLIB_WORKERS=${workers} 
+    LOGFILE="${LOGDIR}/${PREFIX}.SHMEM.hclib-${workers}.cores-${TOTAL_CORES}.log.chunk-${ISX_PE_CHUNKS}"
+    aprun -n ${SHM_TASK} -N 1 -d ${workers} ${SHMEM_ASYNC_EXE} ${BENCH_OPTION} >& "${LOGNAME}"
+    cat "${LOGNAME}" | sed '/resources: utime/d' > "${LOGNAME}.t1"
+    cat "${LOGNAME}.t1" | sed '/WARNING: Running without a provided HCLIB_HPT_FILE/d' >> "${LOGFILE}"
+    rm "${LOGNAME}.t1"
+
+    runID=`expr ${runID} + 1`
+    done
+done

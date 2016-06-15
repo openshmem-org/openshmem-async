@@ -106,7 +106,7 @@ int main(const int argc,  char ** argv)
     avg_time *= 1000;
     avg_time_all2all *= 1000;
     printf("\n============================ MMTk Statistics Totals ============================\n");
-    printf("time\ttimeAll2All\tnWorkers\tnPEs\n");
+    printf("time.mu\ttimeAll2All\tnWorkers\tnPEs\n");
     printf("%.3f\t%.3f\t1\t%d\n",avg_time,avg_time_all2all,NUM_PES);
     printf("Total time: %.3f\n",avg_time);
     printf("------------------------------ End MMTk Statistics -----------------------------\n");
