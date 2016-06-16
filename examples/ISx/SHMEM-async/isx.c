@@ -673,6 +673,7 @@ static inline int ** compute_local_bucket_offsets(int const ** restrict const lo
     int temp = 0;
     int * restrict local_bucket_offsets_1D = local_bucket_offsets[chunk];
     int * restrict local_bucket_sizes_1D = local_bucket_sizes[chunk];
+    int * restrict send_offsets_1D = (*send_offsets)[chunk];
     for(uint64_t i = 1; i < NUM_BUCKETS; i++){
       temp = local_bucket_offsets_1D[i-1] + local_bucket_sizes_1D[i-1];
       local_bucket_offsets_1D[i] = temp;
@@ -799,12 +800,12 @@ static inline KEY_TYPE ** bucketize_local_keys(KEY_TYPE const ** restrict const 
   return my_local_bucketed_keys;
 }
 
-#if defined(_SHMEM_WORKERS)
-pthread_mutex_t *mymutex = NULL;
 long long int** keys_sent_currently_pe_chunk = NULL;
 long long int** fixed_starting_index_pe_chunk = NULL;
 unsigned int * total_keys_sent_per_chunk = NULL;
 long long int* key_index_current = NULL;
+#if defined(_SHMEM_WORKERS)
+pthread_mutex_t *mymutex = NULL;
 
 typedef struct copy_into_sent_bucket_t {
   int const ** restrict const local_bucket_sizes;
@@ -918,15 +919,17 @@ static inline KEY_TYPE ** exchange_keys(int const ** restrict const send_offsets
     keys_sent_currently_pe_chunk = (long long int**) malloc(sizeof(long long int*) * NUM_PES);
     fixed_starting_index_pe_chunk = (long long int**) malloc(sizeof(long long int*) * NUM_PES);
     total_keys_sent_per_chunk = (unsigned int*) malloc(sizeof(unsigned int) * CHUNKS_PER_PE);
-    mymutex = (pthread_mutex_t*) malloc(sizeof(pthread_mutex_t) * NUM_PES * CHUNKS_PER_PE);
     key_index_current = (long long int*) malloc(sizeof(long long int) * NUM_PES);
     for(int i=0; i<NUM_PES; i++) {
       keys_sent_currently_pe_chunk[i] = (long long int*) malloc(sizeof(long long int) * CHUNKS_PER_PE);
       fixed_starting_index_pe_chunk[i] = (long long int*) malloc(sizeof(long long int) * CHUNKS_PER_PE);
     }
+#if defined(_SHMEM_WORKERS)
+    mymutex = (pthread_mutex_t*) malloc(sizeof(pthread_mutex_t) * NUM_PES * CHUNKS_PER_PE);
     for(int i=0; i<NUM_PES*CHUNKS_PER_PE; i++) {
       pthread_mutex_init(&(mymutex[i]), NULL);
     }
+#endif
   }
 
   /*
@@ -945,13 +948,15 @@ static inline KEY_TYPE ** exchange_keys(int const ** restrict const send_offsets
   shmem_task_scope_end();
 #else
 #if defined(_OPENMP)
-int chunk;
+  int chunk;
+  omp_lock_t mymutex[NUM_PES * CHUNKS_PER_PE];
+  for(int i=0; i<NUM_PES * CHUNKS_PER_PE; i++) omp_init_lock(&(mymutex[i]));
 #pragma omp parallel for private(chunk) schedule (dynamic,1) 
 #endif
   for(chunk=0; chunk<CHUNKS_PER_PE; chunk++) {
   const int v_my_rank = GET_VIRTUAL_RANK(my_rank, chunk);
   for(uint64_t i = 0; i < NUM_PES*CHUNKS_PER_PE; ++i){
-#ifdef PERMUTE
+    #ifdef PERMUTE
     const int target_pe = permute_array[i];
     assert("Not implemented for CHUNKS_PER_PE" && 0);
 #elif INCAST
@@ -965,7 +970,11 @@ int chunk;
     const int my_send_size = local_bucket_sizes[chunk][v_target_pe];
     const int min_v_rank_target_pe = GET_VIRTUAL_RANK(r_target_pe, 0);
     const int chunk_r_target_pe = v_target_pe - min_v_rank_target_pe;
-    total_keys_per_pe_per_chunk[(r_target_pe * CHUNKS_PER_PE) + chunk_r_target_pe] += my_send_size;
+    const int index = r_target_pe*CHUNKS_PER_PE + chunk_r_target_pe;
+    omp_set_lock(&(mymutex[index]));
+    // critical section -- 1 line
+    total_keys_per_pe_per_chunk[index] += my_send_size;
+    omp_unset_lock(&(mymutex[index]));
   }
   } 
 #endif
@@ -1088,9 +1097,9 @@ int chunk;
   shmem_task_scope_end();
 #else
 #if defined(_OPENMP)
-int chunk;
 #pragma omp parallel for private(chunk) schedule (dynamic,1) 
 #endif
+  for(chunk=0; chunk<CHUNKS_PER_PE; chunk++) {
   const int v_my_rank = GET_VIRTUAL_RANK(my_rank, chunk);
   for(uint64_t i = 0; i < NUM_PES*CHUNKS_PER_PE; ++i){
     const int v_target_pe = (v_my_rank + i) % (NUM_PES*CHUNKS_PER_PE);
@@ -1102,11 +1111,11 @@ int chunk;
     long long int keys_sent_currently_pe_chunk_current;
 
     // critical section -- 2 lines
-    #pragma omp critical
-    {
+    const int index = r_target_pe*CHUNKS_PER_PE + chunk_r_target_pe;
+    omp_set_lock(&(mymutex[index]));
     keys_sent_currently_pe_chunk_current = keys_sent_currently_pe_chunk[r_target_pe][chunk_r_target_pe];
     keys_sent_currently_pe_chunk[r_target_pe][chunk_r_target_pe] += my_send_size;
-    }
+    omp_unset_lock(&(mymutex[index]));
 
     const long long int write_offset_into_target = fixed_starting_index_pe_chunk[r_target_pe][chunk_r_target_pe] +
                                                      keys_sent_currently_pe_chunk_current;
@@ -1289,6 +1298,7 @@ static inline int ** count_local_keys()
   for(chunk=0; chunk<CHUNKS_PER_PE; chunk++) {
     const int v_rank = GET_VIRTUAL_RANK(my_rank, chunk);
     const int my_min_key = v_rank * BUCKET_WIDTH;
+    KEY_TYPE* restrict my_bucket_keys_1D = &(RECEIVE_BUCKET_INDEX_IN_CHUNK(chunk, 0));
     int * restrict my_local_key_counts_1D = my_local_key_counts[chunk];
     const long long int size = my_bucket_size[chunk];
     // Count the occurences of each key in my bucket
