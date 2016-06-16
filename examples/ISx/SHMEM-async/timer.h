@@ -63,14 +63,6 @@ typedef enum
   TIMER_NTIMERS
 }timer_id;
 
-/*
-static long gettimer() {
-   struct timeval t;
-   gettimeofday(&t,NULL);
-   return t.tv_sec*1000000+t.tv_usec;
-}
-*/
-
 extern _timer_t timers[];
 extern char const * const timer_names[];
 

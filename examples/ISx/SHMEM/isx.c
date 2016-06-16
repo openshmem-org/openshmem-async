@@ -105,6 +105,32 @@ int main(const int argc,  char ** argv)
     double tTime = ( total_time.stop.tv_sec - total_time.start.tv_sec ) + ( total_time.stop.tv_nsec - total_time.start.tv_nsec )/1E9;
     avg_time *= 1000;
     avg_time_all2all *= 1000;
+
+    if(NUM_ITERATIONS == 1) { //TODO: fix time calculation below for more number of iterations
+      printf("time.mu\tt.ATA_KEYS\tt.MAKE_INPUT\tt.COUNT_BUCKET_SIZES\tt.BUCKETIZE\tt.COMPUTE_OFFSETS\tt.LOCAL_SORT\tnWorkers\tnPEs\n");
+      double TIMES[TIMER_NTIMERS];
+      memset(TIMES, 0x00, sizeof(double) * TIMER_NTIMERS);
+      for(int i=0; i<NUM_PES; i++) {
+        for(int t = 0; t < TIMER_NTIMERS; ++t){
+          if(t==2) continue;
+          int index = t < 2 ? t : t-1;
+          if(timers[t].all_times != NULL){
+            TIMES[index] += timers[t].all_times[i];
+          }
+        }
+      }
+      for(int t = 0; t < TIMER_NTIMERS-1; ++t){
+        printf("%.3f\t", (TIMES[t]/NUM_PES)*1000);
+      }
+      printf("1\t%d\n",NUM_PES);
+    }
+    else {
+      printf("time.mu\ttimeAll2All\tnWorkers\tnPEs\n");
+      printf("%.3f\t%.3f\t1\t%d\n",avg_time,avg_time_all2all,NUM_PES);
+      printf("Total time: %.3f\n",avg_time);
+    }
+
+
     printf("\n============================ MMTk Statistics Totals ============================\n");
     printf("time.mu\ttimeAll2All\tnWorkers\tnPEs\n");
     printf("%.3f\t%.3f\t1\t%d\n",avg_time,avg_time_all2all,NUM_PES);

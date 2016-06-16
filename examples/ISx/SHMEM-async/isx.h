@@ -110,7 +110,7 @@ static int verify_results(int const ** restrict const my_local_key_counts);
 /*
  * Seeds each rank based on the rank number, worker id and time
  */
-static inline pcg32_random_t seed_my_worker(int wid);
+static inline pcg32_random_t seed_my_chunk(int wid);
 
 /*
  * Seeds each rank based on the rank number and time
