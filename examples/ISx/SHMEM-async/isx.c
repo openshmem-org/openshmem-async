@@ -1137,12 +1137,7 @@ static inline KEY_TYPE ** exchange_keys(int const ** restrict const send_offsets
   }
   }
 #endif
-  for(int chunk=0; chunk<CHUNKS_PER_PE; chunk++) total_keys_sent += total_keys_sent_per_chunk[chunk];
 
-#ifdef BARRIER_ATA
-  shmem_barrier_all();
-#endif
- 
   /*
    * Send the keys in the my_bucket_keys_sent array to the remote virtual PEs. We store all these
    * keys at remote PEs in the array my_bucket_keys_received that is also partitioned for 
@@ -1192,6 +1187,7 @@ static inline KEY_TYPE ** exchange_keys(int const ** restrict const send_offsets
   long long keys_index = 0;
   long long int** read_offset = (long long int**) malloc(sizeof(long long int*) * CHUNKS_PER_PE);
   for(int chunk=0; chunk<CHUNKS_PER_PE; chunk++) {
+    total_keys_sent += total_keys_sent_per_chunk[chunk];
     total_keys_per_pe_per_chunk[chunk] = keys_index;
     read_offset[chunk] = (long long int*) malloc(sizeof(long long int) * NUM_PES);
     for(uint64_t i = 0; i < NUM_PES; ++i){
