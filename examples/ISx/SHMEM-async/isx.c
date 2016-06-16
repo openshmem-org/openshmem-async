@@ -29,6 +29,53 @@ LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
 ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE 
 POSSIBILITY OF SUCH DAMAGE.
 */
+
+/*
+ * This is a threaded version of ISx implemented using the reference
+ * version of ISx hosted at https://github.com/ParRes/ISx
+ *
+ * Author: Vivek Kumar (vivekk@rice.edu)
+ *
+ * -------------------------------------------------------
+ * Design changes w.r.t reference version:
+ * -------------------------------------------------------
+ * In the reference version, launching the base version of ISx 
+ * with nPES processes and keys/pe of NUM_KEY_PE (e.g., weak scaling)
+ * will result in creation of nPES number of buckets at each PE. 
+ * Once the local computation (in several stages) is done, each PE will do alltoall operation
+ * to exchange bucketized keys with other PE and then perform the final local
+ * sort.
+ *
+ * In this threaded version, we assume that the user is launching nW number of
+ * ``real workers'' (threads) per PE, each running on one core. Now when the user
+ * launches nPES number of processes, there are a total of nPES x nW number
+ * of processing elements. Keys/PE = NUM_KEY_PE x nW.
+ * We now assume that each PE will have CHUNKS_PER_PE number of ``virtual workers''.
+ * Total keys per PE are divided among these virtual workers as (NUM_KEY_PE x nW / CHUNKS_PER_PE).
+ * The variable CHUNKS_PER_PE is set by the user using env variable ISX_PE_CHUNKS. 
+ * Each PE hence creates CHUNKS_PER_PE x nPES number of buckets. We use the same
+ * algorithm as in the reference version, but now we assume there are CHUNKS_PER_PE x nPES
+ * number of virtual processing elements, where CHUNKS_PER_PE number of virtual processing
+ * elements are residing on each PE.
+ * These virtual workers perform the computation without any interferance from other
+ * virtual workers on the home PE. They will then carry an alltoall operation 
+ * with all other virtual workers in the whole system (total CHUNKS_PER_PE x nPES).
+ * We have optimized this alltoall operations among the virtual workers, such
+ * that each real PE will only perform alltoall operation. But this appears as
+ * alltoall operation among CHUNKS_PER_PE x nPES number of virtual workers.
+ * After this alltoall operation, each virtual worker do a local sort on their
+ * portion of keys to complete the execution.
+ *
+ * --------------------------------------------------------
+ * Mapping of virtual workers to real workers (threads/PE):
+ * --------------------------------------------------------
+ * Each real workers per PE (nW) would use work-stealing to steal computation from 
+ * virtual workers residing at each PE. There are two implementations of real workers
+ * in this version of ISx. They are using: a) AsyncSHMEM workers (Habanero-C library
+ * based work-stealing per PE), and b) OpenMP workers.
+ *
+ */
+
 #include <shmem.h>
 #include <assert.h>
 #include <stdlib.h>
