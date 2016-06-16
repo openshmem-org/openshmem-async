@@ -97,7 +97,6 @@ char** m_argv;
 volatile int whose_turn;
 
 long long int* receive_offset;
-long long int* my_bucket_size;
 
 /*
  * In case of CHUNKS_PER_PE>1, setting KEY_BUFFER_SIZE_PER_PE=(1uLL<<28uLL) 
@@ -368,8 +367,7 @@ static int bucket_sort(void)
   my_bucket_keys_received = (KEY_TYPE *) shmem_malloc(sizeof(KEY_TYPE) * KEY_BUFFER_SIZE_PER_PE);
   my_bucket_keys_sent = (KEY_TYPE *) shmem_malloc(sizeof(KEY_TYPE) * KEY_BUFFER_SIZE_PER_PE);
 
-  receive_offset = (long long int*) shmem_malloc(sizeof(long long int) * CHUNKS_PER_PE);
-  my_bucket_size = (long long int*) shmem_malloc(sizeof(long long int) * CHUNKS_PER_PE);
+  receive_offset = (long long int*) malloc(sizeof(long long int) * CHUNKS_PER_PE);
 
   starting_index_pe_sent_bucket = (long long int*) malloc(sizeof(long long int) * NUM_PES);
   starting_index_pe_receive_bucket = (long long int*) shmem_malloc(sizeof(long long int) * NUM_PES);
@@ -413,7 +411,6 @@ static int bucket_sort(void)
                   local_bucket_sizes,
                   my_local_bucketed_keys);
 
-    memcpy(my_bucket_size, receive_offset, CHUNKS_PER_PE*sizeof(long long int)); 
 // Time phase = 2790.646
     int** my_local_key_counts = count_local_keys();
 
@@ -427,23 +424,35 @@ static int bucket_sort(void)
     }
 
     shmem_barrier_all();
+ 
+    // free all local malloc-ed memory
+    for(int chunk=0; chunk<CHUNKS_PER_PE; chunk++) {
+      free(my_local_key_counts[chunk]);
+      free(my_local_bucketed_keys[chunk]);      
+      free(local_bucket_sizes[chunk]);      
+      free(local_bucket_offsets[chunk]);      
+      free(my_keys[chunk]);      
+    }
+    free(my_local_key_counts);
+    free(my_local_bucketed_keys);
+    free(local_bucket_sizes);
+    free(local_bucket_offsets);
+    free(my_keys);
+
   }
 
-#if 0  // Not freeing up the resources as its segfaulting
+  // free all global memory
   for(int k=0; k<NUM_PES; k++) {
     shmem_free(total_keys_per_pe_per_chunk_alltoall[k]);
     shmem_free(starting_index_pe_receive_bucket_alltoall[k]);
   }
   shmem_free(total_keys_per_pe_per_chunk_alltoall);
-  shmem_free(total_keys_per_pe_per_chunk);
   shmem_free(starting_index_pe_receive_bucket_alltoall);
-   shmem_free(starting_index_pe_receive_bucket);
-  shmem_free(starting_index_pe_sent_bucket);
-  shmem_free(my_bucket_size);
-  shmem_free(receive_offset);
+  shmem_free(total_keys_per_pe_per_chunk);
+  shmem_free(starting_index_pe_receive_bucket);
+  free(starting_index_pe_sent_bucket);
   shmem_free(my_bucket_keys_sent);
   shmem_free(my_bucket_keys_received);
-#endif
 
   return err;
 }
@@ -451,6 +460,9 @@ static int bucket_sort(void)
 #if defined(_SHMEM_WORKERS)
 void make_input_async(void *args, int chunk) {
   KEY_TYPE ** restrict my_keys = *((KEY_TYPE *** restrict) args);
+  // note that we are able to move this malloc here
+  // just because its a local malloc and not a shmem_malloc.
+  my_keys[chunk] = (KEY_TYPE*) malloc(NUM_KEYS_PER_CHUNK * sizeof(KEY_TYPE));
   
   KEY_TYPE* restrict my_keys_1D = my_keys[chunk];
   pcg32_random_t rng = seed_my_chunk(chunk);
@@ -467,10 +479,7 @@ void make_input_async(void *args, int chunk) {
  */
 static KEY_TYPE ** make_input(void)
 {
-  KEY_TYPE ** restrict const my_keys = (KEY_TYPE**) shmem_malloc(CHUNKS_PER_PE * sizeof(KEY_TYPE*));
-  for(int chunk=0; chunk<CHUNKS_PER_PE; chunk++) {
-    my_keys[chunk] = (KEY_TYPE*) shmem_malloc(NUM_KEYS_PER_CHUNK * sizeof(KEY_TYPE));
-  }
+  KEY_TYPE ** restrict const my_keys = (KEY_TYPE**) malloc(CHUNKS_PER_PE * sizeof(KEY_TYPE*));
  
   timer_start(&timers[TIMER_INPUT]);
 
@@ -490,6 +499,7 @@ static KEY_TYPE ** make_input(void)
 #endif
   // parallel block
   for(chunk=0; chunk<CHUNKS_PER_PE; chunk++) {
+    my_keys[chunk] = (KEY_TYPE*) malloc(NUM_KEYS_PER_CHUNK * sizeof(KEY_TYPE));
     pcg32_random_t rng = seed_my_chunk(chunk);
     KEY_TYPE* restrict my_keys_1D = my_keys[chunk];
     for(uint64_t i = 0; i < NUM_KEYS_PER_CHUNK; ++i) {
@@ -530,6 +540,9 @@ typedef struct count_local_bucket_sizes_t {
 void count_local_bucket_sizes_async(void* arg, int chunk) {
   count_local_bucket_sizes_t* args = (count_local_bucket_sizes_t*) arg;
   int ** restrict local_bucket_sizes = (*(args->local_bucket_sizes));
+  local_bucket_sizes[chunk] = (int*) malloc(NUM_BUCKETS * sizeof(int));
+  // note that we are able to move this malloc here
+  // just because its a local malloc and not a shmem_malloc.
   KEY_TYPE ** const restrict const my_keys = args->my_keys;
   KEY_TYPE* restrict my_keys_1D = my_keys[chunk];
   int * restrict local_bucket_sizes_1D = local_bucket_sizes[chunk];
@@ -548,10 +561,7 @@ void count_local_bucket_sizes_async(void* arg, int chunk) {
  */
 static inline int ** count_local_bucket_sizes(KEY_TYPE const ** restrict const my_keys)
 {
-  int ** restrict const local_bucket_sizes = (int**) shmem_malloc(CHUNKS_PER_PE * sizeof(int*));
-  for(int chunk=0; chunk<CHUNKS_PER_PE; chunk++) {
-    local_bucket_sizes[chunk] = (int*) shmem_malloc(NUM_BUCKETS * sizeof(int));
-  }
+  int ** restrict const local_bucket_sizes = (int**) malloc(CHUNKS_PER_PE * sizeof(int*));
 
   timer_start(&timers[TIMER_BCOUNT]);
 
@@ -572,6 +582,7 @@ static inline int ** count_local_bucket_sizes(KEY_TYPE const ** restrict const m
 #pragma omp parallel for private(chunk) schedule (dynamic,1) 
 #endif
   for(chunk=0; chunk<CHUNKS_PER_PE; chunk++) {
+    local_bucket_sizes[chunk] = (int*) malloc(NUM_BUCKETS * sizeof(int));
     init_array(local_bucket_sizes[chunk] , NUM_BUCKETS); // doing memset 0x00
     KEY_TYPE* restrict my_keys_1D = my_keys[chunk];
     int * restrict local_bucket_sizes_1D = local_bucket_sizes[chunk];
@@ -618,6 +629,10 @@ void compute_local_bucket_offsets_async(void *arg, int chunk) {
   int **restrict local_bucket_offsets = *(args->local_bucket_offsets);
   int const ** restrict const local_bucket_sizes = args->local_bucket_sizes;
   int *** restrict send_offsets = args->send_offsets;
+  // note that we are able to move this malloc here
+  // just because its a local malloc and not a shmem_malloc.
+  local_bucket_offsets[chunk] = (int*) malloc(NUM_BUCKETS * sizeof(int));
+  (*send_offsets)[chunk] = (int*) malloc(NUM_BUCKETS * sizeof(int));
   int * restrict send_offsets_1D = (*send_offsets)[chunk];
 
   local_bucket_offsets[chunk][0] = 0;
@@ -642,12 +657,8 @@ void compute_local_bucket_offsets_async(void *arg, int chunk) {
 static inline int ** compute_local_bucket_offsets(int const ** restrict const local_bucket_sizes,
                                                  int *** restrict send_offsets)
 {
-  int ** restrict const local_bucket_offsets = (int**) shmem_malloc(CHUNKS_PER_PE * sizeof(int*));
-  (*send_offsets) = (int**) shmem_malloc(CHUNKS_PER_PE * sizeof(int*));
-  for(int chunk=0; chunk<CHUNKS_PER_PE; chunk++) {
-    local_bucket_offsets[chunk] = (int*) shmem_malloc(NUM_BUCKETS * sizeof(int));
-    (*send_offsets)[chunk] = (int*) shmem_malloc(NUM_BUCKETS * sizeof(int));
-  }
+  int ** restrict const local_bucket_offsets = (int**) malloc(CHUNKS_PER_PE * sizeof(int*));
+  (*send_offsets) = (int**) malloc(CHUNKS_PER_PE * sizeof(int*));
 
   timer_start(&timers[TIMER_BOFFSET]);
 
@@ -668,6 +679,8 @@ static inline int ** compute_local_bucket_offsets(int const ** restrict const lo
 #pragma omp parallel for private(chunk) schedule (dynamic,1) 
 #endif
   for(chunk=0; chunk<CHUNKS_PER_PE; chunk++) {
+    local_bucket_offsets[chunk] = (int*) malloc(NUM_BUCKETS * sizeof(int));
+    (*send_offsets)[chunk] = (int*) malloc(NUM_BUCKETS * sizeof(int));
     local_bucket_offsets[chunk][0] = 0;
     (*send_offsets)[chunk][0] = 0;
     int temp = 0;
@@ -714,6 +727,9 @@ typedef struct bucketize_local_keys_t {
 void bucketize_local_keys_async(void* arg, int chunk) {
   bucketize_local_keys_t* args = (bucketize_local_keys_t*) arg;
   KEY_TYPE ** restrict my_local_bucketed_keys = *(args->my_local_bucketed_keys);
+  // note that we are able to move this malloc here
+  // just because its a local malloc and not a shmem_malloc.
+  my_local_bucketed_keys[chunk] = (KEY_TYPE*) malloc(NUM_KEYS_PER_CHUNK * sizeof(KEY_TYPE));
   KEY_TYPE const ** restrict const my_keys = args->my_keys;
   int ** restrict const local_bucket_offsets = args->local_bucket_offsets;
 
@@ -739,10 +755,7 @@ void bucketize_local_keys_async(void* arg, int chunk) {
 static inline KEY_TYPE ** bucketize_local_keys(KEY_TYPE const ** restrict const my_keys,
                                               int ** restrict const local_bucket_offsets)
 {
-  KEY_TYPE ** restrict const my_local_bucketed_keys = (KEY_TYPE**) shmem_malloc(CHUNKS_PER_PE * sizeof(KEY_TYPE*));
-  for(int chunk=0; chunk<CHUNKS_PER_PE; chunk++) {
-    my_local_bucketed_keys[chunk] = (KEY_TYPE*) shmem_malloc(NUM_KEYS_PER_CHUNK * sizeof(KEY_TYPE));
-  }
+  KEY_TYPE ** restrict const my_local_bucketed_keys = (KEY_TYPE**) malloc(CHUNKS_PER_PE * sizeof(KEY_TYPE*));
 
   timer_start(&timers[TIMER_BUCKETIZE]);
 
@@ -763,6 +776,7 @@ static inline KEY_TYPE ** bucketize_local_keys(KEY_TYPE const ** restrict const 
 #pragma omp parallel for private(chunk) schedule (dynamic,1) 
 #endif
   for(chunk=0; chunk<CHUNKS_PER_PE; chunk++) {
+    my_local_bucketed_keys[chunk] = (KEY_TYPE*) malloc(NUM_KEYS_PER_CHUNK * sizeof(KEY_TYPE));
     KEY_TYPE * restrict my_keys_1D = my_keys[chunk];
     int * restrict local_bucket_offsets_1D = local_bucket_offsets[chunk];
     KEY_TYPE * restrict my_local_bucketed_keys_1D = my_local_bucketed_keys[chunk];
@@ -1242,16 +1256,24 @@ int chunk;
   return &my_bucket_keys_sent; // TODO remove this return as not required
 }
 
+KEY_TYPE* temp_buffer = NULL;
+
 #if defined(_SHMEM_WORKERS)
 void count_local_keys_async(void* arg, int chunk) {
+  const long long int size = receive_offset[chunk];
   int ** restrict const my_local_key_counts = *((int *** restrict const )arg);
+  // note that we are able to move this malloc here
+  // just because its a local malloc and not a shmem_malloc.
+  my_local_key_counts[chunk] = (int*) malloc(BUCKET_WIDTH*sizeof(int));
+  memset(my_local_key_counts[chunk], 0x00, BUCKET_WIDTH * sizeof(int));
+
+  if(size == 0) return;
+  KEY_TYPE* restrict my_bucket_keys_1D = &(RECEIVE_BUCKET_INDEX_IN_CHUNK(chunk, 0));
 
   const int my_rank = shmem_my_pe();
   const int v_rank = GET_VIRTUAL_RANK(my_rank, chunk);
   const int my_min_key = v_rank * BUCKET_WIDTH;
   int * restrict my_local_key_counts_1D = my_local_key_counts[chunk];
-  KEY_TYPE* restrict my_bucket_keys_1D = &(RECEIVE_BUCKET_INDEX_IN_CHUNK(chunk, 0));
-  const long long int size = my_bucket_size[chunk];
   // Count the occurences of each key in my bucket
   for(long long int i = 0; i < size; ++i) {
     const unsigned int key_index = *(my_bucket_keys_1D) - my_min_key;
@@ -1259,7 +1281,7 @@ void count_local_keys_async(void* arg, int chunk) {
     assert(key_index < BUCKET_WIDTH);
     my_local_key_counts_1D[key_index]++;
     my_bucket_keys_1D += 1;
-  }   
+  } 
 }
 #endif
 
@@ -1272,10 +1294,6 @@ void count_local_keys_async(void* arg, int chunk) {
 static inline int ** count_local_keys()
 {
   int ** restrict const my_local_key_counts = (int**) malloc(CHUNKS_PER_PE * sizeof(int*));
-  for(int chunk=0; chunk<CHUNKS_PER_PE; chunk++) {
-    my_local_key_counts[chunk] = (int*) malloc(BUCKET_WIDTH*sizeof(int));
-    memset(my_local_key_counts[chunk], 0x00, BUCKET_WIDTH * sizeof(int));
-  }
 
   timer_start(&timers[TIMER_SORT]);
 
@@ -1296,11 +1314,14 @@ static inline int ** count_local_keys()
 #pragma omp parallel for private(chunk) schedule (dynamic,1) 
 #endif
   for(chunk=0; chunk<CHUNKS_PER_PE; chunk++) {
+    my_local_key_counts[chunk] = (int*) malloc(BUCKET_WIDTH*sizeof(int));
+    memset(my_local_key_counts[chunk], 0x00, BUCKET_WIDTH * sizeof(int));
+
     const int v_rank = GET_VIRTUAL_RANK(my_rank, chunk);
     const int my_min_key = v_rank * BUCKET_WIDTH;
     KEY_TYPE* restrict my_bucket_keys_1D = &(RECEIVE_BUCKET_INDEX_IN_CHUNK(chunk, 0));
     int * restrict my_local_key_counts_1D = my_local_key_counts[chunk];
-    const long long int size = my_bucket_size[chunk];
+    const long long int size = receive_offset[chunk];
     // Count the occurences of each key in my bucket
     for(long long int i = 0; i < size; ++i) {
       const unsigned int key_index = *(my_bucket_keys_1D) - my_min_key;
@@ -1319,7 +1340,7 @@ static inline int ** count_local_keys()
   for(int chunk=0; chunk<CHUNKS_PER_PE; chunk++) {
     char msg[4096];
     const int v_rank = GET_VIRTUAL_RANK(my_rank, chunk);
-    sprintf(msg,"V_Rank %d: Bucket Size %lld | Local Key Counts:", v_rank, my_bucket_size[chunk]);
+    sprintf(msg,"V_Rank %d: Bucket Size %lld | Local Key Counts:", v_rank, receive_offset[chunk]);
     for(uint64_t i = 0; i < BUCKET_WIDTH; ++i){
       if(i < PRINT_MAX)
       sprintf(msg + strlen(msg),"%d ", my_local_key_counts[chunk][i]);
@@ -1351,7 +1372,7 @@ void verify_results_async(void* arg, int chunk) {
   const int my_max_key = (v_rank+1) * BUCKET_WIDTH - 1;
   KEY_TYPE* restrict my_bucket_keys_1D = &(RECEIVE_BUCKET_INDEX_IN_CHUNK(chunk, 0));
   // Verify all keys are within bucket boundaries
-  for(long long int i = 0; i < my_bucket_size[chunk]; ++i){
+  for(long long int i = 0; i < receive_offset[chunk]; ++i){
     const int key = my_bucket_keys_1D[i];
     if((key < my_min_key) || (key > my_max_key)){
       printf("Rank %d Failed Verification!\n",v_rank);
@@ -1365,9 +1386,9 @@ void verify_results_async(void* arg, int chunk) {
   for(uint64_t i = 0; i < BUCKET_WIDTH; ++i){
     bucket_size_test +=  my_local_key_counts_1D[i];
   }
-  if(bucket_size_test != my_bucket_size[chunk]){
+  if(bucket_size_test != receive_offset[chunk]){
     printf("Rank %d Failed Verification!\n",v_rank);
-    printf("Actual Bucket Size: %lld Should be %lld\n", bucket_size_test, my_bucket_size[chunk]);
+    printf("Actual Bucket Size: %lld Should be %lld\n", bucket_size_test, receive_offset[chunk]);
     error[chunk] = 1;
   }
 }
@@ -1409,7 +1430,7 @@ static int verify_results(int const ** restrict const my_local_key_counts)
     const int my_max_key = (v_rank+1) * BUCKET_WIDTH - 1;
     KEY_TYPE* restrict my_bucket_keys_1D = &(RECEIVE_BUCKET_INDEX_IN_CHUNK(chunk, 0));
     // Verify all keys are within bucket boundaries
-    for(long long int i = 0; i < my_bucket_size[chunk]; ++i){
+    for(long long int i = 0; i < receive_offset[chunk]; ++i){
       const int key = my_bucket_keys_1D[i];
       if((key < my_min_key) || (key > my_max_key)){
         printf("Rank %d Failed Verification!\n",v_rank);
@@ -1423,9 +1444,9 @@ static int verify_results(int const ** restrict const my_local_key_counts)
     for(uint64_t i = 0; i < BUCKET_WIDTH; ++i){
       bucket_size_test +=  my_local_key_counts_1D[i];
     }
-    if(bucket_size_test != my_bucket_size[chunk]){
+    if(bucket_size_test != receive_offset[chunk]){
       printf("Rank %d Failed Verification!\n",v_rank);
-      printf("Actual Bucket Size: %lld Should be %lld\n", bucket_size_test, my_bucket_size[chunk]);
+      printf("Actual Bucket Size: %lld Should be %lld\n", bucket_size_test, receive_offset[chunk]);
       error[chunk] = 1;
     }
   }
@@ -1435,7 +1456,7 @@ static int verify_results(int const ** restrict const my_local_key_counts)
   static long long int total_my_bucket_size = 0;
   int tError=0;
   for(int chunk=0; chunk<CHUNKS_PER_PE; chunk++) {
-    total_my_bucket_size += my_bucket_size[chunk];
+    total_my_bucket_size += receive_offset[chunk];
     tError += error[chunk];
   }
 
