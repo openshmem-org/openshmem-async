@@ -287,10 +287,11 @@ static char * parse_params(const int argc, char ** argv)
 
     case WEAK_ISOBUCKET:
       {
-        assert("Broken currently due to CHUNKS_PER_PE" && 0);
-        NUM_KEYS_PER_PE = (uint64_t) (atoi(argv[1]));
+        NUM_KEYS_PER_PE = ((uint64_t) (atoi(argv[1]))) * actual_num_workers;
+        assert(NUM_KEYS_PER_PE%CHUNKS_PER_PE == 0); // if this is not satisfied, change the input
+        NUM_KEYS_PER_CHUNK = NUM_KEYS_PER_PE / CHUNKS_PER_PE;
         BUCKET_WIDTH = ISO_BUCKET_WIDTH; 
-        MAX_KEY_VAL = (uint64_t) (NUM_PES * BUCKET_WIDTH);
+        MAX_KEY_VAL = (uint64_t) (NUM_PES * actual_num_workers *  BUCKET_WIDTH);
         sprintf(scaling_msg,"WEAK_ISOBUCKET");
         break;
       }
