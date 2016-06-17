@@ -253,6 +253,7 @@ int main (int argc, char ** argv) {
         printf("%.3f\t", (TIMES[t]/NUM_PES)*1000);
       }
       printf("%d\t%d\n",actual_num_workers,NUM_PES);
+      printf("Total time: %.3f\n",(TIMES[0]/NUM_PES)*1000);
     }
     else {
       printf("time.mu\ttimeAll2All\tnWorkers\tnPEs\n");

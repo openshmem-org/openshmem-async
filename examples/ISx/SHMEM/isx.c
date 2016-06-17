@@ -122,6 +122,7 @@ int main(const int argc,  char ** argv)
         printf("%.3f\t", (TIMES[t]/NUM_PES)*1000);
       }
       printf("1\t%d\n",NUM_PES);
+      printf("Total time: %.3f\n",(TIMES[0]/NUM_PES)*1000);
     }
     else {
       printf("time.mu\ttimeAll2All\tnWorkers\tnPEs\n");
