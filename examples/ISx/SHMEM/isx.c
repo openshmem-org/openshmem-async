@@ -129,7 +129,6 @@ int main(const int argc,  char ** argv)
       printf("%.3f\t%.3f\t1\t%d\n",avg_time,avg_time_all2all,NUM_PES);
       printf("Total time: %.3f\n",avg_time);
     }
-    printf("Total time: %.3f\n",avg_time);
     printf("------------------------------ End MMTk Statistics -----------------------------\n");
     printf("===== TEST PASSED in %.3f msec =====\n",(tTime*1000));
   }
