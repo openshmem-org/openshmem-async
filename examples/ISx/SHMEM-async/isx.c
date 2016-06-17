@@ -244,14 +244,12 @@ int main (int argc, char ** argv) {
       memset(TIMES, 0x00, sizeof(double) * TIMER_NTIMERS);
       for(int i=0; i<NUM_PES; i++) {
         for(int t = 0; t < TIMER_NTIMERS; ++t){
-          if(t==2) continue;
-          int index = t < 2 ? t : t-1;
           if(timers[t].all_times != NULL){
-            TIMES[index] += timers[t].all_times[i];
+            TIMES[t] += timers[t].all_times[i];
           }
         }
       }
-      for(int t = 0; t < TIMER_NTIMERS-1; ++t){
+      for(int t = 0; t < TIMER_NTIMERS; ++t){
         printf("%.3f\t", (TIMES[t]/NUM_PES)*1000);
       }
       printf("%d\t%d\n",actual_num_workers,NUM_PES);
