@@ -705,6 +705,34 @@ static inline KEY_TYPE * exchange_keys(int const * restrict const send_offsets,
   const int my_rank = shmem_my_pe();
   unsigned int total_keys_sent = 0;
 
+  for(uint64_t i = 0; i < NUM_PES; ++i){
+
+#ifdef PERMUTE
+    const int target_pe = permute_array[i];
+#elif INCAST
+    const int target_pe = i;
+#else
+    const int target_pe = (my_rank + i) % NUM_PES;
+#endif
+
+    // Local keys already written with memcpy
+    if(target_pe == my_rank){ continue; }
+
+    const int read_offset_from_self = send_offsets[target_pe];
+    const int my_send_size = local_bucket_sizes[target_pe];
+    const long long int write_offset_into_target = shmem_longlong_fadd(&receive_offset, (long long int)my_send_size, target_pe); 
+    shmem_int_put(&(my_bucket_keys[write_offset_into_target]),
+                  &(my_local_bucketed_keys[read_offset_from_self]),
+                  my_send_size, target_pe);
+
+#ifdef DEBUG
+    printf("Rank: %d Target: %d Offset into target: %lld Offset into myself: %d Send Size: %d\n",
+        my_rank, target_pe, write_offset_into_target, read_offset_from_self, my_send_size);
+#endif
+
+    total_keys_sent += my_send_size;
+  }
+
   // Keys destined for local key buffer can be written with memcpy
   const long long int write_offset_into_self = shmem_longlong_fadd(&receive_offset, (long long int)local_bucket_sizes[my_rank], my_rank);
   const long long int send_offsets_start = send_offsets[my_rank];
@@ -736,34 +764,6 @@ static inline KEY_TYPE * exchange_keys(int const * restrict const send_offsets,
                           send_size*sizeof(KEY_TYPE)); 
   }
 #endif
-
-  for(uint64_t i = 0; i < NUM_PES; ++i){
-
-#ifdef PERMUTE
-    const int target_pe = permute_array[i];
-#elif INCAST
-    const int target_pe = i;
-#else
-    const int target_pe = (my_rank + i) % NUM_PES;
-#endif
-
-    // Local keys already written with memcpy
-    if(target_pe == my_rank){ continue; }
-
-    const int read_offset_from_self = send_offsets[target_pe];
-    const int my_send_size = local_bucket_sizes[target_pe];
-    const long long int write_offset_into_target = shmem_longlong_fadd(&receive_offset, (long long int)my_send_size, target_pe); 
-    shmem_int_put(&(my_bucket_keys[write_offset_into_target]),
-                  &(my_local_bucketed_keys[read_offset_from_self]),
-                  my_send_size, target_pe);
-
-#ifdef DEBUG
-    printf("Rank: %d Target: %d Offset into target: %lld Offset into myself: %d Send Size: %d\n",
-        my_rank, target_pe, write_offset_into_target, read_offset_from_self, my_send_size);
-#endif
-
-    total_keys_sent += my_send_size;
-  }
 
 #ifdef BARRIER_ATA
   shmem_barrier_all();
