@@ -65,6 +65,8 @@ long long int receive_offset = 0;
 long long int my_bucket_size = 0;
 
 #define PARALLEL_FOR_MODE SHMEM_PARALLEL_FOR_RECURSIVE_MODE
+#define CHUNKS_COUNT_LOCAL_KEYS (actual_num_workers)
+#define CHUNKS_MAKE_INPUT CHUNKS_PER_PE
 int actual_num_workers;
 int** local_bucket_sizes_chunk;
 int ** my_local_key_counts;
@@ -291,12 +293,12 @@ static int bucket_sort(void)
 #endif
 
   my_bucket_keys = (KEY_TYPE*) shmem_malloc(KEY_BUFFER_SIZE * sizeof(KEY_TYPE));
-  my_local_key_counts = malloc(actual_num_workers * sizeof(int*));
-  for(int i=0; i<actual_num_workers; i++) my_local_key_counts[i] = malloc(BUCKET_WIDTH * sizeof(int));
+  my_local_key_counts = malloc(CHUNKS_COUNT_LOCAL_KEYS * sizeof(int*));
+  for(int i=0; i<CHUNKS_COUNT_LOCAL_KEYS; i++) my_local_key_counts[i] = malloc(BUCKET_WIDTH * sizeof(int));
 
   for(uint64_t i = 0; i < (NUM_ITERATIONS + BURN_IN); ++i)
   {
-    for(int i=0; i<actual_num_workers; i++) memset(my_local_key_counts[i], 0x00, BUCKET_WIDTH * sizeof(int));
+    for(int i=0; i<CHUNKS_COUNT_LOCAL_KEYS; i++) memset(my_local_key_counts[i], 0x00, BUCKET_WIDTH * sizeof(int));
     local_bucket_sizes_chunk = malloc(CHUNKS_PER_PE* sizeof(int*));
 
     // Reset timers after burn in 
@@ -350,13 +352,11 @@ static int bucket_sort(void)
     shmem_barrier_all();
   }
 
-  for(int i=0; i<actual_num_workers; i++) free(my_local_key_counts[i]);
+  for(int i=0; i<CHUNKS_COUNT_LOCAL_KEYS; i++) free(my_local_key_counts[i]);
   free(my_local_key_counts);
 
   return err;
 }
-
-#define CHUNKS_MAKE_INPUT CHUNKS_PER_PE
 
 #if defined(_SHMEM_WORKERS)
 void make_input_async(void *args, int chunk) {
@@ -839,7 +839,7 @@ static inline int* count_local_keys(KEY_TYPE const * restrict const my_bucket_ke
 
 #if defined(_SHMEM_WORKERS)
   int lowBound = 0;
-  int highBound = actual_num_workers;
+  int highBound = CHUNKS_COUNT_LOCAL_KEYS;
   int stride = 1;
   int tile_size = 1;
   int loop_dimension = 1;
@@ -852,7 +852,7 @@ static inline int* count_local_keys(KEY_TYPE const * restrict const my_bucket_ke
   uint64_t i;
 #pragma omp parallel for private(i) schedule (static,1) 
 #endif  
-  for(int chunk=0; chunk<actual_num_workers; chunk++) {
+  for(int chunk=0; chunk<CHUNKS_COUNT_LOCAL_KEYS; chunk++) {
     const int start_index = chunk * max_chunks;
     const int max_index = start_index + max_chunks;
     for(int i=start_index; i<max_index; i++) {
@@ -865,9 +865,9 @@ static inline int* count_local_keys(KEY_TYPE const * restrict const my_bucket_ke
 #endif
 
   //sequential part here
-  const int leftover = my_bucket_size - (max_chunks * actual_num_workers);
+  const int leftover = my_bucket_size - (max_chunks * CHUNKS_COUNT_LOCAL_KEYS);
   if(leftover) {
-    const int chunk = actual_num_workers - 1;
+    const int chunk = CHUNKS_COUNT_LOCAL_KEYS - 1;
     for(int i=(my_bucket_size-leftover); i<my_bucket_size; i++) {
       const unsigned int key_index = my_bucket_keys[i] - my_min_key;
       assert(my_bucket_keys[i] >= my_min_key);
@@ -984,7 +984,7 @@ static int verify_results(KEY_TYPE const * restrict const my_local_keys)
 
   // Verify the sum of the key population equals the expected bucket size
   long long int bucket_size_test = 0;
-  for(int chunk=0; chunk<actual_num_workers; chunk++) {
+  for(int chunk=0; chunk<CHUNKS_COUNT_LOCAL_KEYS; chunk++) {
     for(uint64_t i = 0; i < BUCKET_WIDTH; ++i){
       bucket_size_test +=  my_local_key_counts[chunk][i];
     }
