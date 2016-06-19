@@ -93,7 +93,7 @@ float avg_time=0, avg_time_all2all = 0;
 #define KEY_BUFFER_SIZE (1uLL<<28uLL)
 
 // The receive array for the All2All exchange
-KEY_TYPE my_bucket_keys[KEY_BUFFER_SIZE];
+KEY_TYPE* my_bucket_keys;
 
 #ifdef PERMUTE
 int * permute_array;
@@ -290,6 +290,7 @@ static int bucket_sort(void)
   create_permutation_array();
 #endif
 
+  my_bucket_keys = (KEY_TYPE*) shmem_malloc(KEY_BUFFER_SIZE * sizeof(KEY_TYPE));
   my_local_key_counts = malloc(actual_num_workers * sizeof(int*));
   for(int i=0; i<actual_num_workers; i++) my_local_key_counts[i] = malloc(BUCKET_WIDTH * sizeof(int));
 
@@ -355,17 +356,21 @@ static int bucket_sort(void)
   return err;
 }
 
+#define CHUNKS_MAKE_INPUT CHUNKS_PER_PE
+
 #if defined(_SHMEM_WORKERS)
 void make_input_async(void *args, int chunk) {
   KEY_TYPE * restrict const my_keys = *((KEY_TYPE **) args);
 
-  const uint64_t keys_per_chunk = NUM_KEYS_PER_PE / CHUNKS_PER_PE;
+  const uint64_t keys_per_chunk = NUM_KEYS_PER_PE / CHUNKS_MAKE_INPUT;
   const uint64_t start_index = chunk * keys_per_chunk;
   const uint64_t max_index = start_index + keys_per_chunk;
   pcg32_random_t rng = seed_my_chunk(chunk);
-   
+  
+  KEY_TYPE * restrict my_keys_1D = &(my_keys[start_index]); 
   for(uint64_t i=start_index; i<max_index; i++) {
-     my_keys[i] = pcg32_boundedrand_r(&rng, MAX_KEY_VAL);
+     *my_keys_1D = pcg32_boundedrand_r(&rng, MAX_KEY_VAL);
+     my_keys_1D += 1;
   }
 }
 #endif
@@ -382,7 +387,7 @@ static KEY_TYPE * make_input(void)
 
 #if defined(_SHMEM_WORKERS)
   int lowBound = 0;
-  int highBound = CHUNKS_PER_PE;
+  int highBound = CHUNKS_MAKE_INPUT;
   int stride = 1;
   int tile_size = 1;
   int loop_dimension = 1;
@@ -394,8 +399,8 @@ static KEY_TYPE * make_input(void)
   int chunk;
 #pragma omp parallel for private(chunk) schedule (dynamic,1) 
 #endif
-  for(chunk=0; chunk<CHUNKS_PER_PE; chunk++) {
-    const uint64_t keys_per_chunk = NUM_KEYS_PER_PE / CHUNKS_PER_PE;
+  for(chunk=0; chunk<CHUNKS_MAKE_INPUT; chunk++) {
+    const uint64_t keys_per_chunk = NUM_KEYS_PER_PE / CHUNKS_MAKE_INPUT;
     const uint64_t start_index = chunk * keys_per_chunk;
     const uint64_t max_index = start_index + keys_per_chunk;
     pcg32_random_t rng = seed_my_chunk(chunk);
