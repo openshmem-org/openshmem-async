@@ -438,9 +438,9 @@ void count_local_bucket_sizes_async(void* args, int chunk) {
   int * restrict const local_bucket_sizes = local_bucket_sizes_chunk[chunk];
   const uint32_t keys_per_chunk = NUM_KEYS_PER_PE / CHUNKS_PER_PE;
   const uint32_t start_index = chunk * keys_per_chunk;
-  const uint32_t max_index = start_index + keys_per_chunk;
-  for(uint64_t i = start_index; i < max_index; ++i){
-    const uint32_t bucket_index = my_keys[i]/BUCKET_WIDTH;
+  KEY_TYPE const * restrict const my_keys_1D = &(my_keys[start_index]);
+  for(uint64_t i = 0; i < keys_per_chunk; ++i){
+    const uint32_t bucket_index = my_keys_1D[i]/BUCKET_WIDTH;
     local_bucket_sizes[bucket_index]++;
   }
 }
@@ -572,13 +572,18 @@ void bucketize_local_keys_async(void* args, int chunk) {
   }
   const uint32_t keys_per_chunk = NUM_KEYS_PER_PE / CHUNKS_PER_PE;
   const uint32_t start_index = chunk * keys_per_chunk;
-  const uint32_t max_index = start_index + keys_per_chunk;
-  for(uint64_t i = start_index; i < max_index; ++i){
-    const KEY_TYPE key = my_keys[i];
+
+  KEY_TYPE const * restrict const my_keys_1D = &(my_keys[start_index]);
+  int * restrict local_bucket_offsets_chunk_1D = local_bucket_offsets_chunk[chunk];
+  uint32_t const * restrict const local_bucket_sizes_chunk_1D = local_bucket_sizes_chunk[chunk];
+  KEY_TYPE** restrict my_local_bucketed_keys_chunk_2D = my_local_bucketed_keys_chunk[chunk];
+  
+  for(uint64_t i = 0; i < keys_per_chunk; ++i){
+    const KEY_TYPE key = my_keys_1D[i];
     const uint32_t bucket_index = key / BUCKET_WIDTH;    
-    uint32_t index = local_bucket_offsets_chunk[chunk][bucket_index]++;
-    assert(index < local_bucket_sizes_chunk[chunk][bucket_index]);
-    my_local_bucketed_keys_chunk[chunk][bucket_index][index] = key;
+    uint32_t index = local_bucket_offsets_chunk_1D[bucket_index]++;
+    assert(index < local_bucket_sizes_chunk_1D[bucket_index]);
+    my_local_bucketed_keys_chunk_2D[bucket_index][index] = key;
   }
 }
 #endif
@@ -806,12 +811,14 @@ void count_local_keys_async(void* args, int chunk) {
   const int max_chunks = arg->max_chunks;
   const int my_min_key = arg->my_min_key;
   const int start_index = chunk * max_chunks;
-  const int max_index = start_index + max_chunks;
-  for(int i=start_index; i<max_index; i++) {
-    const unsigned int key_index = my_bucket_keys[i] - my_min_key;
-    assert(my_bucket_keys[i] >= my_min_key);
+ 
+  int * restrict my_local_key_counts_1D = my_local_key_counts[chunk]; 
+  int const * restrict const my_bucket_keys_1D = &(my_bucket_keys[start_index]); 
+  for(int i=0; i<max_chunks; i++) {
+    const unsigned int key_index = my_bucket_keys_1D[i] - my_min_key;
+    assert(my_bucket_keys_1D[i] >= my_min_key);
     assert(key_index < BUCKET_WIDTH);
-    my_local_key_counts[chunk][key_index]++;
+    my_local_key_counts_1D[key_index]++;
   }
 }
 #endif
