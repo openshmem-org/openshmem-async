@@ -290,7 +290,7 @@ static int bucket_sort(void)
   create_permutation_array();
 #endif
 
-  my_local_key_counts = malloc(actual_num_workers * sizeof(int));
+  my_local_key_counts = malloc(actual_num_workers * sizeof(int*));
   for(int i=0; i<actual_num_workers; i++) my_local_key_counts[i] = malloc(BUCKET_WIDTH * sizeof(int));
 
   for(uint64_t i = 0; i < (NUM_ITERATIONS + BURN_IN); ++i)
