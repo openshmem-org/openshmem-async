@@ -44,6 +44,10 @@ POSSIBILITY OF SUCH DAMAGE.
 #include "timer.h"
 #include "pcg_basic.h"
 
+#if defined(_OPENMP)
+#include <omp.h>
+#endif
+
 #define ROOT_PE 0
 
 // Needed for shmem collective operations
@@ -187,16 +191,15 @@ static char * parse_params(const int argc, char ** argv)
     exit(1);
   }
 
+  const char* chunks_env = getenv("ISX_PE_CHUNKS");
+  CHUNKS_PER_PE = chunks_env ? atoi(chunks_env) : 1;
 #if defined(_OPENMP)
 #pragma omp parallel
-  const char* chunks_env = getenv("ISX_PE_CHUNKS");
-  CHUNKS_PER_PE = chunks_env ? atoi(chunks_env) : 1;
   actual_num_workers = omp_get_num_threads();
 #elif defined(_SHMEM_WORKERS)
-  const char* chunks_env = getenv("ISX_PE_CHUNKS");
-  CHUNKS_PER_PE = chunks_env ? atoi(chunks_env) : 1;
   actual_num_workers = shmem_n_workers();
 #else
+  CHUNKS_PER_PE = 1;
   actual_num_workers = 1;
 #endif
   NUM_PES = (uint64_t) shmem_n_pes();
@@ -224,7 +227,7 @@ static char * parse_params(const int argc, char ** argv)
 
     case WEAK_ISOBUCKET:
       {
-        NUM_KEYS_PER_PE = (uint64_t) (atoi(argv[1]));
+        NUM_KEYS_PER_PE = (uint64_t) (atoi(argv[1])) * actual_num_workers;
         BUCKET_WIDTH = ISO_BUCKET_WIDTH; 
         MAX_KEY_VAL = (uint64_t) (NUM_PES * actual_num_workers * BUCKET_WIDTH);
         sprintf(scaling_msg,"WEAK_ISOBUCKET");
@@ -404,9 +407,11 @@ static KEY_TYPE * make_input(void)
     const uint64_t start_index = chunk * keys_per_chunk;
     const uint64_t max_index = start_index + keys_per_chunk;
     pcg32_random_t rng = seed_my_chunk(chunk);
-   
+
+    KEY_TYPE * restrict my_keys_1D = &(my_keys[start_index]);   
     for(uint64_t i=start_index; i<max_index; i++) {
-       my_keys[i] = pcg32_boundedrand_r(&rng, MAX_KEY_VAL);
+       *my_keys_1D = pcg32_boundedrand_r(&rng, MAX_KEY_VAL);
+       my_keys_1D += 1;
     }
   }
 #endif
@@ -477,16 +482,16 @@ static inline int * count_local_bucket_sizes(KEY_TYPE const * restrict const my_
     int chunk;
 #pragma omp parallel for private(chunk) schedule (dynamic,1) 
 #endif
-    for(int chunk=0; chunk<CHUNKS_PER_PE; chunk++) {
-      const uint32_t keys_per_chunk = NUM_KEYS_PER_PE / CHUNKS_PER_PE;
-      const uint32_t start_index = chunk * keys_per_chunk;
-      const uint32_t max_index = start_index + keys_per_chunk;
+    for(chunk=0; chunk<CHUNKS_PER_PE; chunk++) {
       local_bucket_sizes_chunk[chunk] = malloc(NUM_BUCKETS * sizeof(int));
       memset(local_bucket_sizes_chunk[chunk], 0x00, NUM_BUCKETS * sizeof(int));
-      int* restrict const local_bucket_sizes_local = local_bucket_sizes_chunk[chunk];
-      for(uint64_t i = start_index; i < max_index; ++i){
-        const uint32_t bucket_index = my_keys[i]/BUCKET_WIDTH;
-        local_bucket_sizes_local[bucket_index]++;
+      int * restrict const local_bucket_sizes = local_bucket_sizes_chunk[chunk];
+      const uint32_t keys_per_chunk = NUM_KEYS_PER_PE / CHUNKS_PER_PE;
+      const uint32_t start_index = chunk * keys_per_chunk;
+      KEY_TYPE const * restrict const my_keys_1D = &(my_keys[start_index]);
+      for(uint64_t i = 0; i < keys_per_chunk; ++i){
+        const uint32_t bucket_index = my_keys_1D[i]/BUCKET_WIDTH;
+        local_bucket_sizes[bucket_index]++;
       }
     }
 #endif
@@ -625,15 +630,20 @@ static inline KEY_TYPE * bucketize_local_keys(KEY_TYPE const * restrict const my
     }
     const uint32_t keys_per_chunk = NUM_KEYS_PER_PE / CHUNKS_PER_PE;
     const uint32_t start_index = chunk * keys_per_chunk;
-    const uint32_t max_index = start_index + keys_per_chunk;
-    for(uint64_t i = start_index; i < max_index; ++i){
-      const KEY_TYPE key = my_keys[i];
-      const uint32_t bucket_index = key / BUCKET_WIDTH;    
-      uint32_t index = local_bucket_offsets_chunk[chunk][bucket_index]++;
-      assert(index < local_bucket_sizes_chunk[chunk][bucket_index]);
-      my_local_bucketed_keys_chunk[chunk][bucket_index][index] = key;
+
+    KEY_TYPE const * restrict const my_keys_1D = &(my_keys[start_index]);
+    int * restrict local_bucket_offsets_chunk_1D = local_bucket_offsets_chunk[chunk];
+    uint32_t const * restrict const local_bucket_sizes_chunk_1D = local_bucket_sizes_chunk[chunk];
+    KEY_TYPE** restrict my_local_bucketed_keys_chunk_2D = my_local_bucketed_keys_chunk[chunk];
+
+    for(uint64_t i = 0; i < keys_per_chunk; ++i){
+      const KEY_TYPE key = my_keys_1D[i];
+      const uint32_t bucket_index = key / BUCKET_WIDTH;
+      uint32_t index = local_bucket_offsets_chunk_1D[bucket_index]++;
+      assert(index < local_bucket_sizes_chunk_1D[bucket_index]);
+      my_local_bucketed_keys_chunk_2D[bucket_index][index] = key;
     }
-  } 
+  }
 #endif
 
   for(int bucket=0; bucket<NUM_BUCKETS; bucket++) {
@@ -747,13 +757,14 @@ static inline KEY_TYPE * exchange_keys(int const * restrict const send_offsets,
   const long long int write_offset_into_self = shmem_longlong_fadd(&receive_offset, (long long int)local_bucket_sizes[my_rank], my_rank);
   const long long int send_offsets_start = send_offsets[my_rank];
   const long long int chunks = local_bucket_sizes[my_rank] / actual_num_workers;
+  const long long int max_bucket_size = local_bucket_sizes[my_rank];
 #if defined(_SHMEM_WORKERS)
   int lowBound = 0;
   int highBound = actual_num_workers;
   int stride = 1;
   int tile_size = 1;
   int loop_dimension = 1;
-  exchange_keys_async_t args = {my_local_bucketed_keys, local_bucket_sizes[my_rank], send_offsets_start, write_offset_into_self};
+  exchange_keys_async_t args = {my_local_bucketed_keys, max_bucket_size, send_offsets_start, write_offset_into_self};
   shmem_task_scope_begin();
   shmem_parallel_for_nbi(exchange_keys_async, (void*)(&args), NULL, lowBound, highBound, stride, tile_size, loop_dimension, SHMEM_PARALLEL_FOR_RECURSIVE_MODE);
   shmem_task_scope_end();
@@ -762,16 +773,17 @@ static inline KEY_TYPE * exchange_keys(int const * restrict const send_offsets,
   int chunk;
 #pragma omp parallel for private(chunk) schedule (dynamic,1) 
 #endif
-  for(chunk=0; chunk<acutal_num_workers; chunk++) {
+  for(chunk=0; chunk<actual_num_workers; chunk++) {
+    const long long int chunks = max_bucket_size / actual_num_workers;
     const long long int write_offset_into_self_worker = write_offset_into_self + (chunk * chunks);
     const long long int send_offsets_start_worker = send_offsets_start + (chunk * chunks);
     long long int send_size = chunks;
     if(chunk+1 == actual_num_workers) {
-      long long int leftover = local_bucket_sizes[my_rank] - (chunks * actual_num_workers);
+      long long int leftover = max_bucket_size - (chunks * actual_num_workers);
       send_size += leftover;
     }
     memcpy(&my_bucket_keys[write_offset_into_self_worker],&my_local_bucketed_keys[send_offsets_start_worker],
-                          send_size*sizeof(KEY_TYPE)); 
+                        send_size*sizeof(KEY_TYPE));
   }
 #endif
 
@@ -854,12 +866,13 @@ static inline int* count_local_keys(KEY_TYPE const * restrict const my_bucket_ke
 #endif  
   for(int chunk=0; chunk<CHUNKS_COUNT_LOCAL_KEYS; chunk++) {
     const int start_index = chunk * max_chunks;
-    const int max_index = start_index + max_chunks;
-    for(int i=start_index; i<max_index; i++) {
-      const unsigned int key_index = my_bucket_keys[i] - my_min_key;
-      assert(my_bucket_keys[i] >= my_min_key);
+    int * restrict my_local_key_counts_1D = my_local_key_counts[chunk];
+    int const * restrict const my_bucket_keys_1D = &(my_bucket_keys[start_index]);
+    for(int i=0; i<max_chunks; i++) {
+      const unsigned int key_index = my_bucket_keys_1D[i] - my_min_key;
+      assert(my_bucket_keys_1D[i] >= my_min_key);
       assert(key_index < BUCKET_WIDTH);
-      my_local_key_counts[chunk][key_index]++;
+      my_local_key_counts_1D[key_index]++;
     }
   }
 #endif
@@ -951,18 +964,17 @@ static int verify_results(KEY_TYPE const * restrict const my_local_keys)
 #else
 #if defined(_OPENMP)
   int chunk;
-#pragma omp parallel for private(i) schedule (static,1) 
+#pragma omp parallel for private(chunk) schedule (static,1) 
 #endif
   // Verify all keys are within bucket boundaries
   for(chunk=0; chunk<actual_num_workers; chunk++) {
     const int start_index = chunk * max_chunks;
     const int max_index = start_index + max_chunks;
     for(int i=start_index; i<max_index; i++) {
-      const int key = my_local_keys[i];
+      const int key = my_bucket_keys[i];
       if((key < my_min_key) || (key > my_max_key)){
-        printf("Rank %d Failed Verification!\n",my_rank);
+        printf("Rank %d Failed Verification!\n",shmem_my_pe());
         printf("Key: %d is outside of bounds [%d, %d]\n", key, my_min_key, my_max_key);
-        error = 1;
       }
     }
   }
