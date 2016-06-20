@@ -2,7 +2,7 @@ CC = oshcc -fopenmp
 LD = $(CC)
 DEBUGFLAGS = -g -p -O0 -DDEBUG
 OPTFLAGS = -O3 -DNDEBUG -mavx
-CFLAGS += -Wall -Wextra -std=c99 -g #$(OPTFLAGS)
+CFLAGS += -Wall -Wextra -std=c99 #$(OPTFLAGS)
 LDLIBS += -lrt -lm 
 LDFLAGS += 
 ### 
