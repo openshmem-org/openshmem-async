@@ -766,7 +766,7 @@ static inline KEY_TYPE * exchange_keys(int const * restrict const send_offsets,
   int loop_dimension = 1;
   exchange_keys_async_t args = {my_local_bucketed_keys, max_bucket_size, send_offsets_start, write_offset_into_self};
   shmem_task_scope_begin();
-  shmem_parallel_for_nbi(exchange_keys_async, (void*)(&args), NULL, lowBound, highBound, stride, tile_size, loop_dimension, SHMEM_PARALLEL_FOR_RECURSIVE_MODE);
+  shmem_parallel_for_nbi(exchange_keys_async, (void*)(&args), NULL, lowBound, highBound, stride, tile_size, loop_dimension, SHMEM_PARALLEL_FOR_FLAT_MODE);
   shmem_task_scope_end();
 #else
 #if defined(_OPENMP)
