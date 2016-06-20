@@ -580,7 +580,7 @@ void bucketize_local_keys_async(void* args, int chunk) {
 
   KEY_TYPE const * restrict const my_keys_1D = &(my_keys[start_index]);
   int * restrict local_bucket_offsets_chunk_1D = local_bucket_offsets_chunk[chunk];
-  uint32_t const * restrict const local_bucket_sizes_chunk_1D = local_bucket_sizes_chunk[chunk];
+  int const * restrict const local_bucket_sizes_chunk_1D = local_bucket_sizes_chunk[chunk];
   KEY_TYPE** restrict my_local_bucketed_keys_chunk_2D = my_local_bucketed_keys_chunk[chunk];
   
   for(uint64_t i = 0; i < keys_per_chunk; ++i){
@@ -633,7 +633,7 @@ static inline KEY_TYPE * bucketize_local_keys(KEY_TYPE const * restrict const my
 
     KEY_TYPE const * restrict const my_keys_1D = &(my_keys[start_index]);
     int * restrict local_bucket_offsets_chunk_1D = local_bucket_offsets_chunk[chunk];
-    uint32_t const * restrict const local_bucket_sizes_chunk_1D = local_bucket_sizes_chunk[chunk];
+    int const * restrict const local_bucket_sizes_chunk_1D = local_bucket_sizes_chunk[chunk];
     KEY_TYPE** restrict my_local_bucketed_keys_chunk_2D = my_local_bucketed_keys_chunk[chunk];
 
     for(uint64_t i = 0; i < keys_per_chunk; ++i){
@@ -774,7 +774,6 @@ static inline KEY_TYPE * exchange_keys(int const * restrict const send_offsets,
 #pragma omp parallel for private(chunk) schedule (dynamic,1) 
 #endif
   for(chunk=0; chunk<actual_num_workers; chunk++) {
-    const long long int chunks = max_bucket_size / actual_num_workers;
     const long long int write_offset_into_self_worker = write_offset_into_self + (chunk * chunks);
     const long long int send_offsets_start_worker = send_offsets_start + (chunk * chunks);
     long long int send_size = chunks;
@@ -861,10 +860,10 @@ static inline int* count_local_keys(KEY_TYPE const * restrict const my_bucket_ke
   shmem_task_scope_end();
 #else
 #if defined(_OPENMP)
-  uint64_t i;
-#pragma omp parallel for private(i) schedule (static,1) 
+  int chunk;
+#pragma omp parallel for private(chunk) schedule (static,1) 
 #endif  
-  for(int chunk=0; chunk<CHUNKS_COUNT_LOCAL_KEYS; chunk++) {
+  for(chunk=0; chunk<CHUNKS_COUNT_LOCAL_KEYS; chunk++) {
     const int start_index = chunk * max_chunks;
     int * restrict my_local_key_counts_1D = my_local_key_counts[chunk];
     int const * restrict const my_bucket_keys_1D = &(my_bucket_keys[start_index]);
@@ -917,7 +916,7 @@ typedef struct verify_results_async_t {
 
 void verify_results_async(void* args, int chunk) {
   verify_results_async_t* arg = (verify_results_async_t*) args;
-  const max_chunks = arg->max_chunks;
+  const int max_chunks = arg->max_chunks;
   const int my_min_key = arg->my_min_key;
   const int my_max_key = arg->my_max_key;
 
@@ -983,7 +982,6 @@ static int verify_results(KEY_TYPE const * restrict const my_local_keys)
   //sequential part here
   const int leftover = my_bucket_size - (max_chunks * actual_num_workers);
   if(leftover) {
-    const int chunk = actual_num_workers - 1;
     for(int i=(my_bucket_size-leftover); i<my_bucket_size; i++) {
       const int key = my_local_keys[i];
       if((key < my_min_key) || (key > my_max_key)){
