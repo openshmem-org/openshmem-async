@@ -68,7 +68,7 @@ volatile int whose_turn;
 long long int receive_offset = 0;
 long long int my_bucket_size = 0;
 
-#define ASYNCSHMEM_CALLBACK
+//#define ASYNCSHMEM_CALLBACK
 
 #define PARALLEL_FOR_MODE SHMEM_PARALLEL_FOR_RECURSIVE_MODE
 #define CHUNKS_COUNT_LOCAL_KEYS (actual_num_workers)

@@ -1037,15 +1037,22 @@ static inline KEY_TYPE ** exchange_keys(int const ** restrict const send_offsets
    * of keys we would be sending them for each of their chunks
    */
   for(int i=0; i<NUM_PES; i++) {
-    if(my_rank == i) {  
+#ifdef PERMUTE
+    const int target_pe = permute_array[i];
+#elif INCAST
+    const int target_pe = i;
+#else
+    const int target_pe = (my_rank + i) % NUM_PES;
+#endif
+    if(my_rank == target_pe) {  
       memcpy(total_keys_per_pe_per_chunk_alltoall[my_rank], 
              &(total_keys_per_pe_per_chunk[my_rank * CHUNKS_PER_PE]), 
              CHUNKS_PER_PE * sizeof(long long int));
     }
     else {
       shmem_longlong_put(total_keys_per_pe_per_chunk_alltoall[my_rank], 
-             &(total_keys_per_pe_per_chunk[i * CHUNKS_PER_PE]), 
-             (long long int) CHUNKS_PER_PE , i);
+             &(total_keys_per_pe_per_chunk[target_pe * CHUNKS_PER_PE]), 
+             (long long int) CHUNKS_PER_PE , target_pe);
     }
   }
 
@@ -1082,13 +1089,20 @@ static inline KEY_TYPE ** exchange_keys(int const ** restrict const send_offsets
    * they do a put operation and at what index
    */
   for(int i=0; i<NUM_PES; i++) {
-    if(my_rank == i) {
+#ifdef PERMUTE
+    const int target_pe = permute_array[i];
+#elif INCAST
+    const int target_pe = i;
+#else
+    const int target_pe = (my_rank + i) % NUM_PES;
+#endif
+    if(my_rank == target_pe) {
       memcpy(starting_index_pe_receive_bucket_alltoall[my_rank], starting_index_pe_receive_bucket, 
              sizeof(long long int) * NUM_PES);
     }
     else {
       shmem_longlong_put(starting_index_pe_receive_bucket_alltoall[my_rank], starting_index_pe_receive_bucket,
-             (long long int)NUM_PES, i);
+             (long long int)NUM_PES, target_pe);
     }
   }
 
@@ -1190,18 +1204,25 @@ static inline KEY_TYPE ** exchange_keys(int const ** restrict const send_offsets
    * each virtual PE and for each rank
    */ 
   for(uint64_t i = 0; i < NUM_PES; ++i){
+#ifdef PERMUTE
+    const int target_pe = permute_array[i];
+#elif INCAST
+    const int target_pe = i;
+#else
+    const int target_pe = (my_rank + i) % NUM_PES;
+#endif
     long long int total_keys_to_send = 0;
     for(int j=0; j<CHUNKS_PER_PE; j++) {
-      if(total_keys_per_pe_per_chunk[(i * CHUNKS_PER_PE) + j] == 0) continue;
-      total_keys_to_send += total_keys_per_pe_per_chunk[(i * CHUNKS_PER_PE) + j];
-      assert(keys_sent_currently_pe_chunk[i][j] == total_keys_per_pe_per_chunk[(i * CHUNKS_PER_PE) + j]);
+      if(total_keys_per_pe_per_chunk[(target_pe * CHUNKS_PER_PE) + j] == 0) continue;
+      total_keys_to_send += total_keys_per_pe_per_chunk[(target_pe * CHUNKS_PER_PE) + j];
+      assert(keys_sent_currently_pe_chunk[target_pe][j] == total_keys_per_pe_per_chunk[(target_pe * CHUNKS_PER_PE) + j]);
     }    
     if(total_keys_to_send == 0) continue;
-    if(i == my_rank) {
+    if(target_pe == my_rank) {
       memcpy(&(my_bucket_keys_received[GET_INDEX_RECEIVE_BUCKET(my_rank,my_rank,0)]), &(my_bucket_keys_sent[GET_INDEX_SENT_BUCKET(my_rank,0)]), (int) total_keys_to_send * sizeof(KEY_TYPE));
     }
     else {
-      shmem_int_put(&(my_bucket_keys_received[GET_INDEX_RECEIVE_BUCKET(i,my_rank,0)]), &(my_bucket_keys_sent[GET_INDEX_SENT_BUCKET(i,0)]), (int) total_keys_to_send, i);
+      shmem_int_put(&(my_bucket_keys_received[GET_INDEX_RECEIVE_BUCKET(target_pe,my_rank,0)]), &(my_bucket_keys_sent[GET_INDEX_SENT_BUCKET(target_pe,0)]), (int) total_keys_to_send, target_pe);
     }
   }
 
