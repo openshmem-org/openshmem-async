@@ -68,6 +68,8 @@ volatile int whose_turn;
 long long int receive_offset = 0;
 long long int my_bucket_size = 0;
 
+#define ASYNCSHMEM_CALLBACK
+
 #define PARALLEL_FOR_MODE SHMEM_PARALLEL_FOR_RECURSIVE_MODE
 #define CHUNKS_COUNT_LOCAL_KEYS (actual_num_workers)
 #define CHUNKS_MAKE_INPUT CHUNKS_PER_PE
@@ -394,9 +396,15 @@ static KEY_TYPE * make_input(void)
   int stride = 1;
   int tile_size = 1;
   int loop_dimension = 1;
+#ifndef ASYNCSHMEM_CALLBACK
   shmem_task_scope_begin();
+#endif
   shmem_parallel_for_nbi(make_input_async, (void*)(&my_keys), NULL, lowBound, highBound, stride, tile_size, loop_dimension, SHMEM_PARALLEL_FOR_FLAT_MODE);
+#ifndef ASYNCSHMEM_CALLBACK
   shmem_task_scope_end();
+#else
+  shmem_barrier_all();
+#endif
 #else
 #if defined(_OPENMP)
   int chunk;
@@ -474,9 +482,15 @@ static inline int * count_local_bucket_sizes(KEY_TYPE const * restrict const my_
     int stride = 1;
     int tile_size = 1;
     int loop_dimension = 1; 
+#ifndef ASYNCSHMEM_CALLBACK
     shmem_task_scope_begin();
+#endif
     shmem_parallel_for_nbi(count_local_bucket_sizes_async, (void*)(my_keys), NULL, lowBound, highBound, stride, tile_size, loop_dimension, SHMEM_PARALLEL_FOR_FLAT_MODE);
+#ifndef ASYNCSHMEM_CALLBACK
     shmem_task_scope_end();
+#else
+    shmem_barrier_all();
+#endif
 #else
 #if defined(_OPENMP)
     int chunk;
@@ -613,9 +627,15 @@ static inline KEY_TYPE * bucketize_local_keys(KEY_TYPE const * restrict const my
   int stride = 1;
   int tile_size = 1;
   int loop_dimension = 1;
+#ifndef ASYNCSHMEM_CALLBACK
   shmem_task_scope_begin();
+#endif
   shmem_parallel_for_nbi(bucketize_local_keys_async, (void*)(my_keys), NULL, lowBound, highBound, stride, tile_size, loop_dimension, SHMEM_PARALLEL_FOR_FLAT_MODE);
+#ifndef ASYNCSHMEM_CALLBACK
   shmem_task_scope_end();
+#else
+  shmem_barrier_all();
+#endif
 #else
 #if defined(_OPENMP)
   int chunk;
@@ -765,9 +785,13 @@ static inline KEY_TYPE * exchange_keys(int const * restrict const send_offsets,
   int tile_size = 1;
   int loop_dimension = 1;
   exchange_keys_async_t args = {my_local_bucketed_keys, max_bucket_size, send_offsets_start, write_offset_into_self};
+#ifndef ASYNCSHMEM_CALLBACK
   shmem_task_scope_begin();
+#endif
   shmem_parallel_for_nbi(exchange_keys_async, (void*)(&args), NULL, lowBound, highBound, stride, tile_size, loop_dimension, SHMEM_PARALLEL_FOR_FLAT_MODE);
+#ifndef ASYNCSHMEM_CALLBACK
   shmem_task_scope_end();
+#endif
 #else
 #if defined(_OPENMP)
   int chunk;
@@ -855,9 +879,15 @@ static inline int* count_local_keys(KEY_TYPE const * restrict const my_bucket_ke
   int tile_size = 1;
   int loop_dimension = 1;
   count_local_keys_async_t args = {max_chunks, my_min_key};
+#ifndef ASYNCSHMEM_CALLBACK
   shmem_task_scope_begin();
+#endif
   shmem_parallel_for_nbi(count_local_keys_async, (void*)(&args), NULL, lowBound, highBound, stride, tile_size, loop_dimension, SHMEM_PARALLEL_FOR_FLAT_MODE);
+#ifndef ASYNCSHMEM_CALLBACK
   shmem_task_scope_end();
+#else
+  shmem_barrier_all();
+#endif
 #else
 #if defined(_OPENMP)
   int chunk;
@@ -957,9 +987,15 @@ static int verify_results(KEY_TYPE const * restrict const my_local_keys)
   int tile_size = 1;
   int loop_dimension = 1;
   verify_results_async_t args = {max_chunks, my_min_key, my_max_key};
+#ifndef ASYNCSHMEM_CALLBACK
   shmem_task_scope_begin();
+#endif
   shmem_parallel_for_nbi(verify_results_async, (void*)(&args), NULL, lowBound, highBound, stride, tile_size, loop_dimension, SHMEM_PARALLEL_FOR_FLAT_MODE);
+#ifndef ASYNCSHMEM_CALLBACK
   shmem_task_scope_end();
+#else
+  shmem_barrier_all();
+#endif
 #else
 #if defined(_OPENMP)
   int chunk;
