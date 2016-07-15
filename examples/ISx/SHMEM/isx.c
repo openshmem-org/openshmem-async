@@ -64,6 +64,10 @@ volatile int whose_turn;
 long long int receive_offset = 0;
 long long int my_bucket_size = 0;
 
+#define SHMEM_BARRIER_AT_START    { timer_start(&timers[TIMER_BARRIER_START]); shmem_barrier_all(); timer_stop(&timers[TIMER_BARRIER_START]); }
+#define SHMEM_BARRIER_AT_EXCHANGE { timer_start(&timers[TIMER_BARRIER_EXCHANGE]); shmem_barrier_all(); timer_stop(&timers[TIMER_BARRIER_EXCHANGE]); }
+#define SHMEM_BARRIER_AT_END      { timer_start(&timers[TIMER_BARRIER_END]); shmem_barrier_all(); timer_stop(&timers[TIMER_BARRIER_END]); }
+
 #define EXTRA_STATS
 
 #ifdef EXTRA_STATS
@@ -108,7 +112,7 @@ int main(const int argc,  char ** argv)
 
     printf("\n============================ MMTk Statistics Totals ============================\n");
     if(NUM_ITERATIONS == 1) { //TODO: fix time calculation below for more number of iterations
-      printf("time.mu\tt.ATA_KEYS\tt.MAKE_INPUT\tt.COUNT_BUCKET_SIZES\tt.BUCKETIZE\tt.COMPUTE_OFFSETS\tt.LOCAL_SORT\tnWorkers\tnPEs\n");
+      printf("time.mu\tt.ATA_KEYS\tt.MAKE_INPUT\tt.COUNT_BUCKET_SIZES\tt.BUCKETIZE\tt.COMPUTE_OFFSETS\tt.LOCAL_SORT\tBARRIER_AT_START\tBARRIER_AT_EXCHANGE\tBARRIER_AT_END\tnWorkers\tnPEs\n");
       double TIMES[TIMER_NTIMERS];
       memset(TIMES, 0x00, sizeof(double) * TIMER_NTIMERS);
       for(int i=0; i<NUM_PES; i++) {
@@ -244,7 +248,7 @@ static int bucket_sort(void)
     // Reset timers after burn in 
     if(i == BURN_IN){ init_timers(NUM_ITERATIONS); } 
 
-    shmem_barrier_all();
+    SHMEM_BARRIER_AT_START;
 
     timer_start(&timers[TIMER_TOTAL]);
 
@@ -266,7 +270,7 @@ static int bucket_sort(void)
 
     int * my_local_key_counts = count_local_keys(my_bucket_keys);
 
-    shmem_barrier_all();
+    SHMEM_BARRIER_AT_END;
 
     timer_stop(&timers[TIMER_TOTAL]);
 
@@ -500,7 +504,7 @@ static inline KEY_TYPE * exchange_keys(int const * restrict const send_offsets,
   }
 
 #ifdef BARRIER_ATA
-  shmem_barrier_all();
+  SHMEM_BARRIER_AT_EXCHANGE;
 #endif
 
   timer_stop(&timers[TIMER_ATA_KEYS]);

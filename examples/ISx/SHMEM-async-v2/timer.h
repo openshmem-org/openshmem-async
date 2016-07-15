@@ -58,6 +58,9 @@ typedef enum
   TIMER_BUCKETIZE,
   TIMER_BOFFSET,
   TIMER_SORT,
+  TIMER_BARRIER_START,
+  TIMER_BARRIER_EXCHANGE,
+  TIMER_BARRIER_END,
   //
   // Place new timers above and update timer_names[]
   TIMER_NTIMERS

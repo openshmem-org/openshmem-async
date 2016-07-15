@@ -68,8 +68,6 @@ volatile int whose_turn;
 long long int receive_offset = 0;
 long long int my_bucket_size = 0;
 
-//#define ASYNCSHMEM_CALLBACK
-
 #define PARALLEL_FOR_MODE SHMEM_PARALLEL_FOR_RECURSIVE_MODE
 #define CHUNKS_COUNT_LOCAL_KEYS (actual_num_workers)
 #define CHUNKS_MAKE_INPUT CHUNKS_PER_PE
@@ -85,6 +83,10 @@ int** local_bucket_offsets_chunk;
 int CHUNKS_PER_PE=1;
 
 #define GET_VIRTUAL_RANK(rank, chunk) ((rank * actual_num_workers) + (chunk))
+
+#define SHMEM_BARRIER_AT_START    { timer_start(&timers[TIMER_BARRIER_START]); shmem_barrier_all(); timer_stop(&timers[TIMER_BARRIER_START]); }
+#define SHMEM_BARRIER_AT_EXCHANGE { timer_start(&timers[TIMER_BARRIER_EXCHANGE]); shmem_barrier_all(); timer_stop(&timers[TIMER_BARRIER_EXCHANGE]); }
+#define SHMEM_BARRIER_AT_END      { timer_start(&timers[TIMER_BARRIER_END]); shmem_barrier_all(); timer_stop(&timers[TIMER_BARRIER_END]); }
 
 // This is done due to current limitation that entrypoint function
 // cannot accept arguments. This will be resolved in future version of
@@ -146,7 +148,7 @@ int main (int argc, char ** argv) {
     avg_time_all2all *= 1000;
     printf("\n============================ MMTk Statistics Totals ============================\n");
     if(NUM_ITERATIONS == 1) { //TODO: fix time calculation below for more number of iterations
-      printf("time.mu\tt.ATA_KEYS\tt.MAKE_INPUT\tt.COUNT_BUCKET_SIZES\tt.BUCKETIZE\tt.COMPUTE_OFFSETS\tt.LOCAL_SORT\tnWorkers\tnPEs\n");
+      printf("time.mu\tt.ATA_KEYS\tt.MAKE_INPUT\tt.COUNT_BUCKET_SIZES\tt.BUCKETIZE\tt.COMPUTE_OFFSETS\tt.LOCAL_SORT\tBARRIER_AT_START\tBARRIER_AT_EXCHANGE\tBARRIER_AT_END\tnWorkers\tnPEs\n");
       double TIMES[TIMER_NTIMERS];
       memset(TIMES, 0x00, sizeof(double) * TIMER_NTIMERS);
       for(uint64_t i=0; i<NUM_PES; i++) {
@@ -309,7 +311,7 @@ static int bucket_sort(void)
     // Reset timers after burn in 
     if(i == BURN_IN){ init_timers(NUM_ITERATIONS); } 
 
-    shmem_barrier_all();
+    SHMEM_BARRIER_AT_START;
 
     timer_start(&timers[TIMER_TOTAL]);
 
@@ -331,7 +333,7 @@ static int bucket_sort(void)
 
     count_local_keys(my_bucket_keys);
 
-    shmem_barrier_all();
+    SHMEM_BARRIER_AT_END;
 
     timer_stop(&timers[TIMER_TOTAL]);
 
@@ -396,15 +398,9 @@ static KEY_TYPE * make_input(void)
   int stride = 1;
   int tile_size = 1;
   int loop_dimension = 1;
-#ifndef ASYNCSHMEM_CALLBACK
   shmem_task_scope_begin();
-#endif
   shmem_parallel_for_nbi(make_input_async, (void*)(&my_keys), NULL, lowBound, highBound, stride, tile_size, loop_dimension, SHMEM_PARALLEL_FOR_FLAT_MODE);
-#ifndef ASYNCSHMEM_CALLBACK
   shmem_task_scope_end();
-#else
-  shmem_barrier_all();
-#endif
 #else
 #if defined(_OPENMP)
   int chunk;
@@ -482,15 +478,9 @@ static inline int * count_local_bucket_sizes(KEY_TYPE const * restrict const my_
     int stride = 1;
     int tile_size = 1;
     int loop_dimension = 1; 
-#ifndef ASYNCSHMEM_CALLBACK
     shmem_task_scope_begin();
-#endif
     shmem_parallel_for_nbi(count_local_bucket_sizes_async, (void*)(my_keys), NULL, lowBound, highBound, stride, tile_size, loop_dimension, SHMEM_PARALLEL_FOR_FLAT_MODE);
-#ifndef ASYNCSHMEM_CALLBACK
     shmem_task_scope_end();
-#else
-    shmem_barrier_all();
-#endif
 #else
 #if defined(_OPENMP)
     int chunk;
@@ -627,15 +617,9 @@ static inline KEY_TYPE * bucketize_local_keys(KEY_TYPE const * restrict const my
   int stride = 1;
   int tile_size = 1;
   int loop_dimension = 1;
-#ifndef ASYNCSHMEM_CALLBACK
   shmem_task_scope_begin();
-#endif
   shmem_parallel_for_nbi(bucketize_local_keys_async, (void*)(my_keys), NULL, lowBound, highBound, stride, tile_size, loop_dimension, SHMEM_PARALLEL_FOR_FLAT_MODE);
-#ifndef ASYNCSHMEM_CALLBACK
   shmem_task_scope_end();
-#else
-  shmem_barrier_all();
-#endif
 #else
 #if defined(_OPENMP)
   int chunk;
@@ -785,13 +769,9 @@ static inline KEY_TYPE * exchange_keys(int const * restrict const send_offsets,
   int tile_size = 1;
   int loop_dimension = 1;
   exchange_keys_async_t args = {my_local_bucketed_keys, max_bucket_size, send_offsets_start, write_offset_into_self};
-#ifndef ASYNCSHMEM_CALLBACK
   shmem_task_scope_begin();
-#endif
   shmem_parallel_for_nbi(exchange_keys_async, (void*)(&args), NULL, lowBound, highBound, stride, tile_size, loop_dimension, SHMEM_PARALLEL_FOR_FLAT_MODE);
-#ifndef ASYNCSHMEM_CALLBACK
   shmem_task_scope_end();
-#endif
 #else
 #if defined(_OPENMP)
   int chunk;
@@ -811,7 +791,7 @@ static inline KEY_TYPE * exchange_keys(int const * restrict const send_offsets,
 #endif
 
 #ifdef BARRIER_ATA
-  shmem_barrier_all();
+  SHMEM_BARRIER_AT_EXCHANGE;
 #endif
 
   timer_stop(&timers[TIMER_ATA_KEYS]);
@@ -879,15 +859,9 @@ static inline int* count_local_keys(KEY_TYPE const * restrict const my_bucket_ke
   int tile_size = 1;
   int loop_dimension = 1;
   count_local_keys_async_t args = {max_chunks, my_min_key};
-#ifndef ASYNCSHMEM_CALLBACK
   shmem_task_scope_begin();
-#endif
   shmem_parallel_for_nbi(count_local_keys_async, (void*)(&args), NULL, lowBound, highBound, stride, tile_size, loop_dimension, SHMEM_PARALLEL_FOR_FLAT_MODE);
-#ifndef ASYNCSHMEM_CALLBACK
   shmem_task_scope_end();
-#else
-  shmem_barrier_all();
-#endif
 #else
 #if defined(_OPENMP)
   int chunk;
@@ -987,15 +961,9 @@ static int verify_results(KEY_TYPE const * restrict const my_local_keys)
   int tile_size = 1;
   int loop_dimension = 1;
   verify_results_async_t args = {max_chunks, my_min_key, my_max_key};
-#ifndef ASYNCSHMEM_CALLBACK
   shmem_task_scope_begin();
-#endif
   shmem_parallel_for_nbi(verify_results_async, (void*)(&args), NULL, lowBound, highBound, stride, tile_size, loop_dimension, SHMEM_PARALLEL_FOR_FLAT_MODE);
-#ifndef ASYNCSHMEM_CALLBACK
   shmem_task_scope_end();
-#else
-  shmem_barrier_all();
-#endif
 #else
 #if defined(_OPENMP)
   int chunk;

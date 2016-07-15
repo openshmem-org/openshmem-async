@@ -49,7 +49,10 @@ char const * const timer_names[] = {
   [TIMER_BCOUNT]                        = "COUNT_BUCKET_SIZES",
   [TIMER_BUCKETIZE]                     = "BUCKETIZE",
   [TIMER_BOFFSET]                       = "COMPUTE_OFFSETS",
-  [TIMER_SORT]                          = "LOCAL_SORT"
+  [TIMER_SORT]                          = "LOCAL_SORT",
+  [TIMER_BARRIER_START]                 = "BARRIER_START",
+  [TIMER_BARRIER_EXCHANGE]              = "BARRIER_EXCHANGE",
+  [TIMER_BARRIER_END]                   = "BARRIER_END"
 };
 
 _timer_t timers[TIMER_NTIMERS];
