@@ -285,14 +285,12 @@ static char * parse_params(const int argc, char ** argv)
     exit(1);
   }
 
-#if defined(_OPENMP)
   const char* chunks_env = getenv("ISX_PE_CHUNKS");
   CHUNKS_PER_PE = chunks_env ? atoi(chunks_env) : 1;
+#if defined(_OPENMP)
 #pragma omp parallel
   actual_num_workers = omp_get_num_threads();
 #elif defined(_SHMEM_WORKERS)
-  const char* chunks_env = getenv("ISX_PE_CHUNKS");
-  CHUNKS_PER_PE = chunks_env ? atoi(chunks_env) : 1;
   actual_num_workers = shmem_n_workers();
 #else
   actual_num_workers = 1;
