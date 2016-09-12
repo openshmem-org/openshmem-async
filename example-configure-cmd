@@ -1,0 +1,3 @@
+Titan:
+
+CFLAGS="-I/sw/xk6/libelf/0.8.13/sles11.3_gnu4.3.4/include -DHAVE_MMAP=0" CXXFLAGS="-I/sw/xk6/libelf/0.8.13/sles11.3_gnu4.3.4/include -DHAVE_MMAP=0" CC=/opt/gcc/4.9.0/bin/gcc CXX=/opt/gcc/4.9.0/bin/g++ ../openshmem-async/configure --prefix=/ccs/proj/csc205/max/openshmem-async-install --with-hclib=$HCLIB_HOME/hclib-install --with-gasnet-conduit=gemini --with-gasnet-root=/ccs/proj/csc205/max/gasnet-install --with-libelf-incdir=/sw/xk6/libelf/0.8.13/sles11.3_gnu4.3.4/include --with-libelf-libdir=/sw/xk6/libelf/0.8.13/sles11.3_gnu4.3.4/lib --with-libelf=/sw/xk6/libelf/0.8.13/sles11.3_gnu4.3.4

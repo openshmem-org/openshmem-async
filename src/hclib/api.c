@@ -78,15 +78,16 @@ void shmem_task_scope_end() {
 
 void shmem_task_nbi (void (*body)(void *), void *user_data, shmem_future_t **optional_future)
 {
-  hclib_async(body, user_data, optional_future, NULL, NULL, 0);
+  assert(optional_future == NULL); // unsupported, but kept for compatibility with Kumar's APIs
+  hclib_async(body, user_data, NULL, NULL);
 }
 
 void shmem_parallel_for_nbi(void (*body)(void *), void *user_data, shmem_future_t **optional_future, 
                               int lowBound, int highBound, int stride, int tile_size, 
                               int loop_dimension, int loop_mode) {
-  
-  loop_domain_t info = { lowBound, highBound, stride, tile_size};
-  hclib_forasync(body, user_data, optional_future, loop_dimension, &info, loop_mode);
+  assert(optional_future == NULL); // unsupported, but kept for compatibility with Kumar's APIs
+  hclib_loop_domain_t info = { lowBound, highBound, stride, tile_size};
+  hclib_forasync(body, user_data, loop_dimension, &info, loop_mode);
 }
 
 int shmem_n_workers() {
@@ -94,7 +95,7 @@ int shmem_n_workers() {
 }
 
 int shmem_my_worker() {
-  return get_current_worker();
+  return hclib_get_current_worker();
 }
 
 #ifndef HCLIB_COMM_WORKER_FIXED
@@ -108,14 +109,14 @@ void temporary_wrapper(void* entrypoint) {
    * the hclib_end_finish implicitely called at the end of user_main.
    */
   hclib_start_finish();
-  asyncFct_t funcPtr = (asyncFct_t) entrypoint;
+  async_fct_t funcPtr = (async_fct_t) entrypoint;
   funcPtr(NULL);
   hclib_end_finish();
 }
 
 void shmem_workers_init(void* entrypoint, void * arg) {
   assert(arg==NULL && "temporarily we are not allowing passing argument to the entrypoint function");
-  hclib_launch(temporary_wrapper, entrypoint);
+  hclib_launch(temporary_wrapper, entrypoint, NULL, 0);
 }
 #else 
 void shmem_workers_init() {
@@ -166,7 +167,7 @@ void* shmem_future_wait(shmem_future_t *future) {
 
 #else // !HAVE_FEATURE_HCLIB --> unsupported case
 
-typedef void (*asyncFct_t)(void * arg);
+typedef void (*async_fct_t)(void * arg);
 void shmem_parallel_for_nbi(void (*body)(void *), void *user_data, shmem_future_t **optional_future, 
                               int lowBound, int highBound, int stride, int tile_size, 
                               int loop_dimension, int loop_mode) {
@@ -177,7 +178,7 @@ void shmem_task_nbi (void (*body)(void *), void *user_data, shmem_future_t **opt
 int shmem_n_workers() { return -1; }
 int shmem_my_worker() { return -1; }
 void shmem_workers_init(int *argc, char **argv, void* entrypoint, void * arg) { 
-  asyncFct_t funcPtr = (asyncFct_t) entrypoint;
+  async_fct_t funcPtr = (async_fct_t) entrypoint;
   funcPtr(arg);
 }
 void shmem_hclib_end_finish(){}
